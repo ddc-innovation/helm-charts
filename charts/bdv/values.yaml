@@ -1,0 +1,116 @@
+global:
+  imageRegistry: public.ecr.aws/ddc
+  imagePullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+bdv:
+  database:
+    mode: external
+    host: ""
+    port: 3306
+    name: bdv
+    existingSecret: bdv-db
+    usernameKey: username
+    passwordKey: password
+
+  objectStorage:
+    mode: s3
+    bucket: bdv
+    region: us-gov-west-1
+    endpoint: ""
+    pathStyleAccess: false
+    existingSecret: ""
+    accessKeyIdKey: accessKeyId
+    secretAccessKeyKey: secretAccessKey
+
+trino:
+  image:
+    repository: bdv-trino
+    tag: "474"
+  coordinator:
+    replicas: 1
+    service:
+      type: ClusterIP
+      port: 8080
+    resources: {}
+  worker:
+    replicas: 2
+    service:
+      port: 8080
+    resources: {}
+
+hiveMetastore:
+  enabled: true
+  image:
+    repository: bdv-hive-metastore
+    tag: "latest"
+  replicas: 1
+  service:
+    port: 9083
+  resources: {}
+
+ranger:
+  enabled: true
+  image:
+    repository: bdv-ranger
+    tag: "latest"
+  replicas: 1
+  service:
+    type: ClusterIP
+    port: 6080
+  resources: {}
+
+bootstrap:
+  enabled: true
+  image:
+    repository: bdv-bootstrap
+    tag: "latest"
+  backoffLimit: 3
+  command:
+    - /bin/sh
+    - -ec
+    - |
+      echo "Running BDV bootstrap"
+      echo "DATABASE_MODE=${DATABASE_MODE}"
+      echo "OBJECT_STORAGE_MODE=${OBJECT_STORAGE_MODE}"
+      echo "Replace this image command with the BDV Ansible bootstrap entrypoint."
+
+minio:
+  enabled: false
+  mode: standalone
+  replicas: 1
+  rootUser: minioadmin
+  rootPassword: minioadmin
+  buckets:
+    - name: bdv
+      policy: none
+      purge: false
+      versioning: false
+
+perconaOperator:
+  enabled: false
+
+perconaDb:
+  enabled: false
+  mysql:
+    clusterName: bdv-mysql
+

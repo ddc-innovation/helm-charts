@@ -1,0 +1,14 @@
+BDV has been installed.
+
+Trino coordinator service:
+  {{ include "bdv.fullname" . }}-trino.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.trino.coordinator.service.port }}
+
+Hive Metastore service:
+  {{ include "bdv.fullname" . }}-hive-metastore.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.hiveMetastore.service.port }}
+
+Ranger service:
+  {{ include "bdv.fullname" . }}-ranger.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.ranger.service.port }}
+
+If minio.enabled=true or perconaDb.enabled=true, Helm pulls those workloads from
+their upstream public charts.
+

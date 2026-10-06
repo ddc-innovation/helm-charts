@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bdv.fullname" . }}-trino-worker
+  labels:
+    {{- include "bdv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: trino-worker
+spec:
+  replicas: {{ .Values.trino.worker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "bdv.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: trino-worker
+  template:
+    metadata:
+      labels:
+        {{- include "bdv.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: trino-worker
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "bdv.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: trino-worker
+          image: {{ include "bdv.image" (dict "root" . "image" .Values.trino.image) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.trino.worker.service.port }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/trino/config.properties
+              subPath: trino-worker.properties
+          resources:
+            {{- toYaml .Values.trino.worker.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "bdv.fullname" . }}-config
+

@@ -1,0 +1,73 @@
+{{- if .Values.bootstrap.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "bdv.fullname" . }}-bootstrap
+  labels:
+    {{- include "bdv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bootstrap
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.bootstrap.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "bdv.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: bootstrap
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "bdv.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: bootstrap
+          image: {{ include "bdv.image" (dict "root" . "image" .Values.bootstrap.image) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          command:
+            {{- toYaml .Values.bootstrap.command | nindent 12 }}
+          env:
+            - name: DATABASE_MODE
+              value: {{ .Values.bdv.database.mode | quote }}
+            - name: DATABASE_HOST
+              value: {{ .Values.bdv.database.host | quote }}
+            - name: DATABASE_PORT
+              value: {{ .Values.bdv.database.port | quote }}
+            - name: DATABASE_NAME
+              value: {{ .Values.bdv.database.name | quote }}
+            - name: DATABASE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.bdv.database.existingSecret }}
+                  key: {{ .Values.bdv.database.usernameKey }}
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.bdv.database.existingSecret }}
+                  key: {{ .Values.bdv.database.passwordKey }}
+            - name: OBJECT_STORAGE_MODE
+              value: {{ .Values.bdv.objectStorage.mode | quote }}
+            - name: S3_BUCKET
+              value: {{ .Values.bdv.objectStorage.bucket | quote }}
+            - name: S3_REGION
+              value: {{ .Values.bdv.objectStorage.region | quote }}
+            - name: S3_ENDPOINT
+              value: {{ .Values.bdv.objectStorage.endpoint | quote }}
+            {{- if .Values.bdv.objectStorage.existingSecret }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.bdv.objectStorage.existingSecret }}
+                  key: {{ .Values.bdv.objectStorage.accessKeyIdKey }}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.bdv.objectStorage.existingSecret }}
+                  key: {{ .Values.bdv.objectStorage.secretAccessKeyKey }}
+            {{- end }}
+{{- end }}
+

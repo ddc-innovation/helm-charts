@@ -1,0 +1,24 @@
+bdv:
+  database:
+    mode: external
+    host: mysql.example.internal
+    port: 3306
+    name: bdv
+    existingSecret: bdv-db
+  objectStorage:
+    mode: s3
+    bucket: bdv-prod
+    region: us-gov-west-1
+    endpoint: ""
+    pathStyleAccess: false
+    existingSecret: bdv-s3
+
+minio:
+  enabled: false
+
+perconaOperator:
+  enabled: false
+
+perconaDb:
+  enabled: false
+

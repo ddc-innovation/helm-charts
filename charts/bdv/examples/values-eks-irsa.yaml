@@ -1,0 +1,28 @@
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws-us-gov:iam::123456789012:role/bdv-s3-access
+
+bdv:
+  database:
+    mode: external
+    host: mysql.example.internal
+    port: 3306
+    name: bdv
+    existingSecret: bdv-db
+  objectStorage:
+    mode: s3
+    bucket: bdv-prod
+    region: us-gov-west-1
+    endpoint: ""
+    pathStyleAccess: false
+    existingSecret: ""
+
+minio:
+  enabled: false
+
+perconaOperator:
+  enabled: false
+
+perconaDb:
+  enabled: false
+

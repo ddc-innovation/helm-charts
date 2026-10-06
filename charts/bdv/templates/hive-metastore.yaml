@@ -1,0 +1,75 @@
+{{- if .Values.hiveMetastore.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bdv.fullname" . }}-hive-metastore
+  labels:
+    {{- include "bdv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hive-metastore
+spec:
+  replicas: {{ .Values.hiveMetastore.replicas }}
+  selector:
+    matchLabels:
+      {{- include "bdv.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: hive-metastore
+  template:
+    metadata:
+      labels:
+        {{- include "bdv.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: hive-metastore
+    spec:
+      serviceAccountName: {{ include "bdv.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: hive-metastore
+          image: {{ include "bdv.image" (dict "root" . "image" .Values.hiveMetastore.image) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: thrift
+              containerPort: {{ .Values.hiveMetastore.service.port }}
+          env:
+            - name: DATABASE_HOST
+              value: {{ .Values.bdv.database.host | quote }}
+            - name: DATABASE_NAME
+              value: {{ .Values.bdv.database.name | quote }}
+            - name: DATABASE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.bdv.database.existingSecret }}
+                  key: {{ .Values.bdv.database.usernameKey }}
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.bdv.database.existingSecret }}
+                  key: {{ .Values.bdv.database.passwordKey }}
+          volumeMounts:
+            - name: config
+              mountPath: /opt/hive/conf/hive-site.xml
+              subPath: hive-site.xml
+          resources:
+            {{- toYaml .Values.hiveMetastore.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "bdv.fullname" . }}-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "bdv.fullname" . }}-hive-metastore
+  labels:
+    {{- include "bdv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hive-metastore
+spec:
+  selector:
+    {{- include "bdv.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: hive-metastore
+  ports:
+    - name: thrift
+      port: {{ .Values.hiveMetastore.service.port }}
+      targetPort: thrift
+{{- end }}
+
