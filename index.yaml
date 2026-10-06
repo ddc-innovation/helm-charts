@@ -1,0 +1,43 @@
+apiVersion: v1
+entries:
+  bdv:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-10-05T23:10:18.1850242-04:00"
+    dependencies:
+    - condition: minio.enabled
+      name: minio
+      repository: https://charts.min.io/
+      version: 5.4.0
+    - alias: perconaOperator
+      condition: perconaOperator.enabled
+      name: ps-operator
+      repository: https://percona.github.io/percona-helm-charts/
+      version: 0.12.0
+    - alias: perconaDb
+      condition: perconaDb.enabled
+      name: ps-db
+      repository: https://percona.github.io/percona-helm-charts/
+      version: 0.12.0
+    description: BDV solution accelerator with Trino, Ranger, Hive Metastore, optional
+      MinIO, and optional Percona.
+    digest: 4ed5ce27185c9ddeec0872951017d51921b2c82503780a6aa32f42e522b64fdd
+    home: https://github.com/ddc/ddc-solution-accelerators
+    keywords:
+    - bdv
+    - trino
+    - ranger
+    - hive
+    - minio
+    - percona
+    kubeVersion: '>=1.25.0-0'
+    maintainers:
+    - name: DDC
+    name: bdv
+    sources:
+    - https://github.com/ddc/ddc-solution-accelerators
+    type: application
+    urls:
+    - https://ddc-innovation.github.io/helm-charts/bdv-0.1.0.tgz
+    version: 0.1.0
+generated: "2026-10-05T23:10:18.1787608-04:00"
