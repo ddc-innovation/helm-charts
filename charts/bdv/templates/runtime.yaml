@@ -1,0 +1,368 @@
+{{- if .Values.deployment.enabled }}
+{{- $n := include "bdv.fullname" . }}
+{{- $sslMode := required "bootstrap.sslMode is required" .Values.bootstrap.sslMode }}
+{{- if not (has $sslMode (list "REQUIRED" "VERIFY_CA" "VERIFY_IDENTITY")) }}
+{{- fail "Unsupported bootstrap.sslMode" }}
+{{- end }}
+{{- $verifyCA := has $sslMode (list "VERIFY_CA" "VERIFY_IDENTITY") }}
+{{- $s3Endpoint := .Values.objectStorage.endpoint }}
+{{- if eq .Values.objectStorage.provider "minio" }}{{ $s3Endpoint = printf "http://%s-minio:%v" $n .Values.minio.port }}{{ end }}
+{{- range $component := list "hive" "ranger" "coordinator" "worker" }}
+{{- $isBdv := or (eq $component "coordinator") (eq $component "worker") }}
+{{- $c := index $.Values (ternary "bdv" $component $isBdv) }}
+{{- $resources := $c.resources }}
+{{- if eq $component "worker" }}{{ $resources = $.Values.bdv.workerResources }}{{ end }}
+{{- $config := "" }}
+{{- if eq $component "hive" }}{{ $config = $c.configSecret }}{{ end }}
+{{- if eq $component "ranger" }}{{ $config = $c.configMap }}{{ end }}
+{{- if eq $component "coordinator" }}{{ $config = $c.coordinatorConfigSecret }}{{ end }}
+{{- if eq $component "worker" }}{{ $config = $c.workerConfigSecret }}{{ end }}
+{{- $configPath := "/etc/trino" }}
+{{- if not $isBdv }}{{ $configPath = $c.configMountPath }}{{ end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $n }}-{{ $component }}
+  labels:
+    {{- include "bdv.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  {{- if not (and (eq $component "worker") $.Values.bdv.autoscaling.enabled) }}
+  replicas: {{ ternary (int $.Values.bdv.workers) 1 (eq $component "worker") }}
+  {{- end }}
+  {{- if eq $component "worker" }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  {{- else }}
+  strategy: {type: Recreate}
+  {{- end }}
+  selector:
+    matchLabels: {app.kubernetes.io/instance: {{ $.Release.Name }}, app.kubernetes.io/component: {{ $component }}}
+  template:
+    metadata:
+      annotations:
+        {{- if and (eq $component "worker") $.Values.bdv.workerShutdown.enabled }}
+        checksum/worker-drain: {{ $.Files.Get "files/worker-drain.sh" | sha256sum | quote }}
+        {{- end }}
+        checksum/managed-configuration: {{ toJson (dict "configuration" $.Values.configuration "bdv" $.Values.bdv "objectStorage" $.Values.objectStorage "serviceName" $.Values.ranger.authorization.serviceName "hivePort" $.Values.hive.port "rangerPort" $.Values.ranger.port "minioPort" $.Values.minio.port "installTemplate" $.Values.ranger.installPropertiesTemplate "installOverrides" $.Values.ranger.installProperties) | sha256sum | quote }}
+      labels: {app.kubernetes.io/instance: {{ $.Release.Name }}, app.kubernetes.io/component: {{ $component }}}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ ternary (int $.Values.bdv.workerShutdown.terminationGracePeriodSeconds) 120 (and (eq $component "worker") $.Values.bdv.workerShutdown.enabled) }}
+      {{- if eq $component "hive" }}
+      securityContext:
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+      {{- else if $isBdv }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      {{- end }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        {{- if eq $component "ranger" }}
+        # Ranger owns schema/config installation. Bootstrap supplies only its DB identity Secret.
+        - name: vendor-install
+          image: {{ include "bdv.image" $c.image | quote }}
+          command: {{ $c.schemaCommand | toJson }}
+          env:
+            - {name: MYSQL_SSL_MODE, value: {{ $sslMode | quote }}}
+            {{- if $verifyCA }}
+            - {name: MYSQL_CA, value: /ca/ca.crt}
+            {{- end }}
+          volumeMounts:
+            {{- if or $isBdv (eq $component "ranger") $config }}
+            - {name: config, mountPath: {{ $configPath | quote }}, readOnly: true}
+            {{- end }}
+            - {name: db, mountPath: /db, readOnly: true}
+            - {name: ranger-credentials, mountPath: /ranger-credentials, readOnly: true}
+            - {name: work, mountPath: /work}
+            {{- if $verifyCA }}
+            - {name: ca, mountPath: /ca, readOnly: true}
+            {{- end }}
+          resources: {{ toYaml $resources | nindent 12 }}
+        {{- end }}
+        {{- if ne $component "ranger" }}
+        # This bounded executable implements the verified image contract, not a guessed shell command.
+        - name: prerequisites
+          image: {{ include "bdv.image" $c.image | quote }}
+          command: {{ $c.readinessCommand | toJson }}
+          {{- if eq $component "hive" }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          {{- else if $isBdv }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          {{- end }}
+          env:
+            - {name: MYSQL_SSL_MODE, value: {{ $sslMode | quote }}}
+            {{- if $verifyCA }}
+            - {name: MYSQL_CA, value: /ca/ca.crt}
+            {{- end }}
+            - {name: BDV_CHECK_MODE, value: prerequisites}
+            - {name: BDV_CHECK_TIMEOUT, value: "600"}
+            {{- if $isBdv }}
+            - {name: BDV_ROLE, value: {{ $component | quote }}}
+            - {name: TRINO_CONFIG, value: /dev/null}
+            - {name: HOME, value: /tmp}
+            {{- end }}
+            - {name: S3_PROVIDER, value: {{ $.Values.objectStorage.provider | quote }}}
+            - {name: S3_ENDPOINT, value: {{ $s3Endpoint | quote }}}
+            - {name: S3_BUCKET, value: {{ $.Values.objectStorage.bucket | quote }}}
+            - {name: S3_REGION, value: {{ $.Values.objectStorage.region | quote }}}
+            - {name: S3_PATH_STYLE_ACCESS, value: {{ $.Values.objectStorage.pathStyleAccess | quote }}}
+            - {name: HIVE_URI, value: {{ printf "thrift://%s-hive:%v" $n $.Values.hive.port | quote }}}
+            - {name: RANGER_URL, value: {{ printf "http://%s-ranger:%v" $n $.Values.ranger.port | quote }}}
+            - {name: COORDINATOR_URL, value: {{ printf "http://%s-coordinator:%v" $n $.Values.bdv.port | quote }}}
+          volumeMounts:
+            {{- if or $isBdv (eq $component "ranger") $config }}
+            - {name: config, mountPath: {{ $configPath | quote }}, readOnly: true}
+            {{- end }}
+            - {name: work, mountPath: /work}
+            {{- if $isBdv }}
+            - {name: catalogs, mountPath: /etc/trino/catalog, readOnly: true}
+            - {name: plugin, mountPath: /plugin, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+            {{- end }}
+            - {name: s3, mountPath: /s3, readOnly: true}
+            {{- if $verifyCA }}
+            - {name: ca, mountPath: /ca, readOnly: true}
+            {{- end }}
+            {{- if not $isBdv }}
+            - {name: db, mountPath: /db, readOnly: true}
+            {{- end }}
+            {{- if eq $component "hive" }}
+            - {name: tmp, mountPath: /tmp}
+            {{- end }}
+          resources: {{ toYaml $resources | nindent 12 }}
+        {{- end }}
+        {{- if and (not $isBdv) (ne $component "ranger") }}
+        - name: schema
+          image: {{ include "bdv.image" $c.image | quote }}
+          command: {{ $c.schemaCommand | toJson }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          env:
+            - {name: MYSQL_SSL_MODE, value: {{ $sslMode | quote }}}
+            {{- if $verifyCA }}
+            - {name: MYSQL_CA, value: /ca/ca.crt}
+            {{- end }}
+            - {name: BDV_CHECK_TIMEOUT, value: "600"}
+            - {name: S3_PROVIDER, value: {{ $.Values.objectStorage.provider | quote }}}
+            - {name: S3_ENDPOINT, value: {{ $s3Endpoint | quote }}}
+            - {name: S3_BUCKET, value: {{ $.Values.objectStorage.bucket | quote }}}
+            - {name: S3_REGION, value: {{ $.Values.objectStorage.region | quote }}}
+            - {name: S3_PATH_STYLE_ACCESS, value: {{ $.Values.objectStorage.pathStyleAccess | quote }}}
+          volumeMounts:
+            {{- if $config }}
+            - {name: config, mountPath: {{ $configPath | quote }}, readOnly: true}
+            {{- end }}
+            - {name: db, mountPath: /db, readOnly: true}
+            - {name: work, mountPath: /work}
+            - {name: s3, mountPath: /s3, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+            {{- if $verifyCA }}
+            - {name: ca, mountPath: /ca, readOnly: true}
+            {{- end }}
+          resources: {{ toYaml $resources | nindent 12 }}
+        {{- end }}
+      containers:
+        - name: {{ $component }}
+          image: {{ include "bdv.image" $c.image | quote }}
+          command: {{ $c.command | toJson }}
+          {{- if and (eq $component "worker") $.Values.bdv.workerShutdown.enabled }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/usr/bin/bash", "/etc/trino/worker-drain.sh", "shutdown-wait", {{ $.Values.bdv.workerShutdown.waitSeconds | quote }}]
+          {{- end }}
+          {{- if eq $component "hive" }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          {{- else if $isBdv }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          {{- end }}
+          ports: [{name: app, containerPort: {{ $c.port }}}]
+          env:
+            - {name: MYSQL_SSL_MODE, value: {{ $sslMode | quote }}}
+            {{- if $verifyCA }}
+            - {name: MYSQL_CA, value: /ca/ca.crt}
+            {{- end }}
+            {{- if ne $component "ranger" }}
+            - {name: S3_PROVIDER, value: {{ $.Values.objectStorage.provider | quote }}}
+            - {name: S3_ENDPOINT, value: {{ $s3Endpoint | quote }}}
+            - {name: S3_BUCKET, value: {{ $.Values.objectStorage.bucket | quote }}}
+            - {name: S3_REGION, value: {{ $.Values.objectStorage.region | quote }}}
+            - {name: S3_PATH_STYLE_ACCESS, value: {{ $.Values.objectStorage.pathStyleAccess | quote }}}
+            {{- end }}
+            - {name: HIVE_URI, value: {{ printf "thrift://%s-hive:%v" $n $.Values.hive.port | quote }}}
+            - {name: RANGER_URL, value: {{ printf "http://%s-ranger:%v" $n $.Values.ranger.port | quote }}}
+            - {name: COORDINATOR_URL, value: {{ printf "http://%s-coordinator:%v" $n $.Values.bdv.port | quote }}}
+            {{- if $isBdv }}
+            - {name: BDV_ROLE, value: {{ $component | quote }}}
+            - {name: TRINO_CONFIG, value: /dev/null}
+            - {name: HOME, value: /tmp}
+            {{- if $.Values.configuration.managed }}
+            - name: BDV_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ $.Values.objectStorage.credentialsSecret | quote }}, key: accessKey}
+            - name: BDV_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ $.Values.objectStorage.credentialsSecret | quote }}, key: secretKey}
+            {{- end }}
+            {{- if or $.Values.bdv.oauth2.enabled $.Values.configuration.managed }}
+            - name: BDV_INTERNAL_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.bdv.internalSecret | quote }}
+                  key: sharedSecret
+            {{- if and (eq $component "coordinator") $.Values.bdv.oauth2.enabled }}
+            - name: BDV_OIDC_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.bdv.keycloakSecret | quote }}
+                  key: issuer
+            - name: BDV_OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.bdv.keycloakSecret | quote }}
+                  key: clientId
+            - name: BDV_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.bdv.keycloakSecret | quote }}
+                  key: clientSecret
+            {{- end }}
+            {{- end }}
+            {{- end }}
+          startupProbe:
+            {{- if $isBdv }}
+            tcpSocket: {port: app}
+            {{- else }}
+            exec: {command: {{ $c.readinessCommand | toJson }}}
+            {{- end }}
+            failureThreshold: 60
+            periodSeconds: 10
+            timeoutSeconds: {{ ternary 1 5 $isBdv }}
+          readinessProbe:
+            {{- if and (eq $component "worker") $.Values.bdv.workerShutdown.enabled }}
+            exec: {command: ["/usr/bin/bash", "/etc/trino/worker-drain.sh", "ready"]}
+            {{- else }}
+            exec: {command: {{ $c.readinessCommand | toJson }}}
+            {{- end }}
+            periodSeconds: {{ ternary 15 10 $isBdv }}
+            timeoutSeconds: {{ ternary 20 5 $isBdv }}
+          # TCP liveness avoids restarting every worker during an upstream outage.
+          livenessProbe: {tcpSocket: {port: app}, periodSeconds: 20, timeoutSeconds: 3, failureThreshold: 6}
+          resources: {{ toYaml $resources | nindent 12 }}
+          volumeMounts:
+            {{- if or $isBdv (eq $component "ranger") $config }}
+            - {name: config, mountPath: {{ $configPath | quote }}, readOnly: true}
+            {{- end }}
+            - {name: work, mountPath: /work}
+            {{- if $isBdv }}
+            - {name: tmp, mountPath: /tmp}
+            {{- end }}
+            {{- if eq $component "ranger" }}
+            - {name: work, mountPath: /opt/bdv-policy-manager, subPath: ranger-home}
+            {{- end }}
+            {{- if ne $component "ranger" }}
+            - {name: s3, mountPath: /s3, readOnly: true}
+            {{- end }}
+            {{- if eq $component "hive" }}
+            - {name: tmp, mountPath: /tmp}
+            {{- end }}
+            {{- if $verifyCA }}
+            - {name: ca, mountPath: /ca, readOnly: true}
+            {{- end }}
+            {{- if not $isBdv }}
+            {{- if ne $component "ranger" }}
+            - {name: db, mountPath: /db, readOnly: true}
+            {{- end }}
+            {{- else }}
+            - {name: catalogs, mountPath: /etc/trino/catalog, readOnly: true}
+            {{- if $.Values.bdv.mysqlConnectorSecret }}
+            - {name: mysql-connector, mountPath: /mysql-connector, readOnly: true}
+            {{- end }}
+            {{- if and (eq $component "coordinator") $.Values.bdv.keycloakSecret }}
+            - {name: keycloak, mountPath: /keycloak, readOnly: true}
+            {{- end }}
+            - {name: plugin, mountPath: /plugin, readOnly: true}
+            {{- if $.Values.bdv.internalSecret }}
+            - {name: internal, mountPath: /internal, readOnly: true}
+            {{- end }}
+            {{- end }}
+      volumes:
+        {{- if eq $component "ranger" }}
+        - {name: config, configMap: {name: {{ required "ranger.configMap is required" $config | quote }}}}
+        {{- else if and $isBdv $.Values.configuration.managed }}
+        - {name: config, configMap: {name: {{ printf "%s-managed-%s" $n $component | quote }}}}
+        {{- else if $config }}
+        - {name: config, secret: {secretName: {{ $config }}}}
+        {{- end }}
+        - {name: work, emptyDir: {}}
+        {{- if or (eq $component "hive") $isBdv }}
+        - {name: tmp, emptyDir: {sizeLimit: 1Gi}}
+        {{- end }}
+        {{- if ne $component "ranger" }}
+        - {name: s3, secret: {secretName: {{ $.Values.objectStorage.credentialsSecret }}}}
+        {{- end }}
+        {{- if $verifyCA }}
+        - name: ca
+          secret:
+            secretName: {{ required "bootstrap.caSecret is required" $.Values.bootstrap.caSecret | quote }}
+            items:
+              - key: {{ required "bootstrap.caKey is required" $.Values.bootstrap.caKey | quote }}
+                path: ca.crt
+        {{- end }}
+        {{- if not $isBdv }}
+        - {name: db, secret: {secretName: {{ (index $.Values.bootstrap $component).secret }}}}
+        {{- if eq $component "ranger" }}
+        - {name: ranger-credentials, secret: {secretName: {{ required "ranger.credentialsSecret is required" $.Values.ranger.credentialsSecret | quote }}}}
+        {{- end }}
+        {{- else }}
+        {{- if $.Values.configuration.managed }}
+        - {name: catalogs, configMap: {name: {{ printf "%s-managed-catalog" $n | quote }}}}
+        - {name: plugin, configMap: {name: {{ printf "%s-managed-plugin" $n | quote }}}}
+        {{- else }}
+        - {name: catalogs, secret: {secretName: {{ $.Values.bdv.catalogSecret }}}}
+        - {name: plugin, secret: {secretName: {{ $.Values.bdv.pluginSecret }}}}
+        {{- end }}
+        {{- if $.Values.bdv.mysqlConnectorSecret }}
+        - {name: mysql-connector, secret: {secretName: {{ $.Values.bdv.mysqlConnectorSecret }}}}
+        {{- end }}
+        {{- if and (eq $component "coordinator") $.Values.bdv.keycloakSecret }}
+        - {name: keycloak, secret: {secretName: {{ $.Values.bdv.keycloakSecret }}}}
+        {{- end }}
+        {{- if $.Values.bdv.internalSecret }}
+        - {name: internal, secret: {secretName: {{ $.Values.bdv.internalSecret }}}}
+        {{- end }}
+        {{- end }}
+{{- end }}
+{{- end }}

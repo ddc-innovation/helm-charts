@@ -1,0 +1,18 @@
+# Adds the verified JDBC artifact only. Runtime/schema adaptation is still pending.
+# Verification reported an expired Oracle Maven signing key; retain that evidence.
+FROM rstevens198238/mdaca-policy-manager@sha256:ebedcba7cab291e96135db5e062e9b9d992e63653028bf768142b0064c993030
+
+USER root
+COPY --chmod=0644 mysql-connector-j-9.7.0.jar /opt/mysql-connector-j-9.7.0.jar
+RUN printf '%s  %s\n' \
+      '0353648eaa1c91e0f4020c959abf756bc866ffd583df22ae6b6f6e0cbd43eb44' \
+      '/opt/mysql-connector-j-9.7.0.jar' | sha256sum -c - \
+ && test -d /opt/bdv-policy-manager/ews/webapp/WEB-INF/lib \
+ && test ! -e /opt/bdv-policy-manager/ews/webapp/WEB-INF/lib/mysql-connector-j-9.7.0.jar \
+ && ln -s /opt/mysql-connector-j-9.7.0.jar \
+      /opt/bdv-policy-manager/ews/webapp/WEB-INF/lib/mysql-connector-j-9.7.0.jar
+
+# Prevent an unconfigured candidate from invoking the inherited setup.sh.
+# This default only reports Java's version. Helm runtime command remains pending.
+ENTRYPOINT ["java"]
+CMD ["-version"]

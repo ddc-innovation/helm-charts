@@ -1,0 +1,22 @@
+{{- if .Values.deployment.enabled }}
+{{- $installProperties := default (.Files.Get "files/ranger-install.properties") .Values.ranger.installPropertiesTemplate }}
+{{- if not $installProperties }}
+{{- fail "files/ranger-install.properties is required; run scripts/prepare-ranger-config.sh" }}
+{{- end }}
+{{- $installProperties = tpl $installProperties . }}
+{{- range $key, $value := .Values.ranger.installProperties }}
+{{- $pattern := printf "(?m)^%s=.*$" (regexQuoteMeta $key) }}
+{{- $installProperties = regexReplaceAll $pattern $installProperties "" }}
+{{- $installProperties = printf "%s\n%s=%s\n" $installProperties $key (toString $value) }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ required "ranger.configMap is required" .Values.ranger.configMap }}
+  labels:
+    {{- include "bdv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ranger
+data:
+  install.properties: |-
+{{ $installProperties | nindent 4 }}
+{{- end }}

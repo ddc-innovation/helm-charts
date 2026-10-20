@@ -1,14 +1,31 @@
-BDV has been installed.
+{{ if .Values.bootstrap.only }}Database-only mode: one combined Hive/Ranger bootstrap Job provisions databases and retained credential Secrets.
+No application workloads are deployed. Inspect Job {{ include "bdv.fullname" . }}-bootstrap logs.
+{{ else if not .Values.deployment.enabled }}Offline mode: only the contract ConfigMap is rendered.
+This is not workload validation. See docs/BLOCKERS.md and README.md.
+{{ else }}{{ if .Values.ingress.enabled }}BDV URL:
+  https://{{ .Values.ingress.bdvHost }}
 
-Trino coordinator service:
-  {{ include "bdv.fullname" . }}-trino.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.trino.coordinator.service.port }}
+Apache Ranger:
+  URL:      https://{{ .Values.ingress.rangerHost }}
+  Username: admin
+{{ else }}Ingress is disabled. Use port-forward or a trusted in-cluster client for testing.
+Apache Ranger username: admin
+{{ end }}
 
-Hive Metastore service:
-  {{ include "bdv.fullname" . }}-hive-metastore.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.hiveMetastore.service.port }}
+Retrieve the Ranger administrator password when needed:
+  kubectl --namespace {{ .Release.Namespace | quote }} get secret {{ .Values.ranger.credentialsSecret | quote }} -o jsonpath='{.data.rangerAdmin_password}' | base64 --decode; printf '\n'
 
-Ranger service:
-  {{ include "bdv.fullname" . }}-ranger.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.ranger.service.port }}
+The password is not printed by Helm. Ranger stores its runtime credential aliases
+in JCEKS; the retained Kubernetes Secret is the protected operator recovery source.
 
-If minio.enabled=true or perconaDb.enabled=true, Helm pulls those workloads from
-their upstream public charts.
+Check deployment status:
+  kubectl --namespace {{ .Release.Namespace | quote }} get pods
+  kubectl --namespace {{ .Release.Namespace | quote }} get job {{ include "bdv.fullname" . }}-ranger-register
 
+Object storage provider: {{ .Values.objectStorage.provider }}
+{{- if eq .Values.objectStorage.provider "minio" }}
+MinIO uses the {{ .Values.storage.className }} StorageClass.
+{{- else }}
+MinIO is disabled; Hive and BDV use AWS S3 in {{ .Values.objectStorage.region }}.
+{{- end }}
+{{ end }}

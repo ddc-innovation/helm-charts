@@ -1,0 +1,44 @@
+# Development/demo/prototype profile: deploy MinIO on Longhorn.
+# Supply verified immutable MinIO image references before runtime deployment.
+storage:
+  className: longhorn
+  minioSize: 100Gi
+  accessModes: [ReadWriteOnce]
+  existingMinioClaim: ""
+
+objectStorage:
+  provider: minio
+  bucket: bdv-warehouse
+  region: us-east-1
+  endpoint: ""
+  pathStyleAccess: true
+  credentialsSecret: bdv-warehouse-s3
+
+minio:
+  enabled: true
+  image:
+    repository: rstevens198238/pme-minio
+    tag: d3bd29c8126e
+    digest: sha256:eacd3dc98e269e30b88ed10df48560b8b9e7484465912724bedaecf8d5c9936a
+  initImage:
+    repository: rstevens198238/bdv-minio-init
+    tag: 0.1.1
+    digest: sha256:043c62faf5a22d57bdd521e8ed8ef5c78812a89e5faa066749e14f59a9ced63c
+  initCommand: [/usr/local/bin/bdv-minio-init]
+
+hive:
+  image:
+    repository: rstevens198238/mdaca-metastore
+    tag: hive-3.1.3-mysql-9.7.0-0.1.1
+    digest: sha256:41b722eb180b952537cc0fb3d40eb5db7a52b7b57a4af86d2e3a430ed849eeb5
+
+bdv:
+  workers: 0
+  coordinatorConfigSecret: bdv-trino-coordinator
+  catalogSecret: bdv-trino-catalog
+  pluginSecret: bdv-ranger-plugin
+  # Optional integrations are held until their contracts and Secrets are verified.
+  mysqlConnectorSecret: ""
+  keycloakSecret: ""
+  internalSecret: ""
+

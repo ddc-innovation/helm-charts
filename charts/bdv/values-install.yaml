@@ -1,0 +1,54 @@
+# Copy this to values-site.yaml and edit for your environment.
+# The complete configuration file bodies and policy inventory are in values.yaml.
+# Existing external MySQL and Keycloak are prerequisites. No Ranger SSO.
+deployment:
+  enabled: false
+  evidenceConfirmed: false
+  domainsConfirmed: false
+  proxyBoundaryConfirmed: false
+configuration:
+  managed: true
+ingress:
+  enabled: false
+  className: traefik
+  bdvHost: bdv.dinecodetalkers.com
+  rangerHost: bdv-policy-manager.dinecodetalkers.com
+bootstrap:
+  host: 192.168.250.15
+  port: 3306
+  accountHost: 192.168.250.0/255.255.255.0
+  sslMode: REQUIRED
+objectStorage:
+  provider: minio
+  bucket: bdv-warehouse
+  region: us-east-1
+  pathStyleAccess: true
+minio:
+  enabled: true
+  image:
+    repository: rstevens198238/pme-minio
+    tag: d3bd29c8126e
+    digest: sha256:eacd3dc98e269e30b88ed10df48560b8b9e7484465912724bedaecf8d5c9936a
+  initImage:
+    repository: rstevens198238/bdv-minio-init
+    tag: 0.1.1
+    digest: sha256:043c62faf5a22d57bdd521e8ed8ef5c78812a89e5faa066749e14f59a9ced63c
+  initCommand: [/usr/local/bin/bdv-minio-init]
+bdv:
+  oauth2: {enabled: true}
+  workers: 2
+  keycloakSecret: bdv-keycloak
+  internalSecret: bdv-internal
+  mysqlConnectorSecret: ''
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+    scaleDownEnabled: false
+ranger:
+  authorization:
+    enabled: true
+keycloak:
+  issuer: https://sso.dinecodetalkers.com/realms/innonet
+  clientId: bdv

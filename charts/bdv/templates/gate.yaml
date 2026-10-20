@@ -1,0 +1,69 @@
+{{- $active := or .Values.deployment.enabled .Values.bootstrap.only }}
+{{- if and .Values.deployment.enabled .Values.bootstrap.only }}{{ fail "bootstrap.only and deployment.enabled cannot both be true" }}{{ end }}
+{{- if $active }}
+{{- include "bdv.assertImage" (dict "name" "bootstrap.image" "image" .Values.bootstrap.image) }}
+{{- if not .Values.bootstrap.host }}{{ fail "bootstrap.host is required" }}{{ end }}
+{{- if or (not .Values.bootstrap.accountHost) (eq .Values.bootstrap.accountHost "%") }}{{ fail "A restricted bootstrap.accountHost is required; bare % is refused" }}{{ end }}
+{{- range $field := list "database" "username" "secret" }}
+{{- $h := index $.Values.bootstrap.hive $field }}
+{{- $r := index $.Values.bootstrap.ranger $field }}
+{{- if or (not $h) (not $r) (eq $h $r) }}{{ fail (printf "Hive/Ranger %s must be nonempty and distinct" $field) }}{{ end }}
+{{- end }}
+{{- if or (eq .Values.bootstrap.adminSecret .Values.bootstrap.hive.secret) (eq .Values.bootstrap.adminSecret .Values.bootstrap.ranger.secret) }}{{ fail "Admin and application Secret names must be distinct" }}{{ end }}
+{{- end }}
+{{- if .Values.deployment.enabled }}
+{{- if .Values.bdv.oauth2.enabled }}
+{{- if or (not .Values.bdv.keycloakSecret) (not .Values.bdv.internalSecret) }}{{ fail "OAuth requires Keycloak and internal shared-secret references" }}{{ end }}
+{{- if not .Values.deployment.proxyBoundaryConfirmed }}{{ fail "OAuth forwarded-header mode requires a verified proxy boundary" }}{{ end }}
+{{- if and (not .Values.configuration.managed) (or (ne (int .Values.bdv.workers) 0) .Values.bdv.autoscaling.enabled) }}{{ fail "OAuth workers require managed shared-secret configuration" }}{{ end }}
+{{- if ne (int .Values.bdv.port) 8080 }}{{ fail "The verified HTTP readiness contract requires BDV port 8080" }}{{ end }}
+{{- end }}
+{{- if and .Values.deployment.enabled .Values.configuration.managed (not .Values.bdv.internalSecret) }}{{ fail "Managed configuration requires bdv.internalSecret" }}{{ end }}
+{{- if and .Values.deployment.enabled .Values.configuration.managed }}
+{{- $jvm := .Values.bdv.jvm }}
+{{- if or (gt (int $jvm.initialRAMPercentage) (int $jvm.maxRAMPercentage)) (ge (add (int $jvm.queryMemoryPercentageOfLimit) (int $jvm.heapHeadroomPercentageOfLimit)) (int $jvm.maxRAMPercentage)) }}{{ fail "JVM initial/max percentages and query memory/headroom budget are inconsistent" }}{{ end }}
+{{- end }}
+{{- if and .Values.deployment.enabled .Values.bdv.autoscaling.enabled }}
+{{- if or (lt (int .Values.bdv.autoscaling.minReplicas) 2) (lt (int .Values.bdv.autoscaling.maxReplicas) (int .Values.bdv.autoscaling.minReplicas)) }}{{ fail "Worker HPA requires 2 <= minReplicas <= maxReplicas" }}{{ end }}
+{{- if not .Values.configuration.managed }}{{ fail "Worker HPA requires managed configuration" }}{{ end }}
+{{- end }}
+{{- if not .Values.deployment.evidenceConfirmed }}{{ fail "Resolve docs/BLOCKERS.md and verify image contracts before runtime deployment" }}{{ end }}
+{{- if and .Values.ingress.enabled (or (not .Values.deployment.domainsConfirmed) (not .Values.deployment.proxyBoundaryConfirmed)) }}{{ fail "Confirm DNS and proxy boundary before enabling ingress" }}{{ end }}
+{{- range $key := list "hive" "ranger" "bdv" }}
+{{- $c := index $.Values $key }}
+{{- include "bdv.assertImage" (dict "name" (printf "%s.image" $key) "image" $c.image) }}
+{{- if not $c.command }}{{ fail (printf "%s.command must come from verified image startup" $key) }}{{ end }}
+{{- if not $c.readinessCommand }}{{ fail (printf "%s.readinessCommand must implement verified probes/prerequisites" $key) }}{{ end }}
+{{- end }}
+{{- range $key := list "hive" "ranger" }}
+{{- if not (index $.Values $key).schemaCommand }}{{ fail (printf "%s.schemaCommand must implement guarded initialization and read-only validation" $key) }}{{ end }}
+{{- end }}
+{{- $provider := .Values.objectStorage.provider }}
+{{- if not (has $provider (list "minio" "aws-s3")) }}{{ fail "objectStorage.provider must be minio or aws-s3" }}{{ end }}
+{{- if or (not .Values.objectStorage.bucket) (not .Values.objectStorage.region) (not .Values.objectStorage.credentialsSecret) }}{{ fail "Object storage bucket, region and credentials Secret are required" }}{{ end }}
+{{- if eq $provider "minio" }}
+{{- if not .Values.minio.enabled }}{{ fail "minio.enabled must be true when objectStorage.provider is minio" }}{{ end }}
+{{- if not .Values.objectStorage.pathStyleAccess }}{{ fail "MinIO requires objectStorage.pathStyleAccess=true" }}{{ end }}
+{{- include "bdv.assertImage" (dict "name" "minio.image" "image" .Values.minio.image) }}
+{{- include "bdv.assertImage" (dict "name" "minio.initImage" "image" .Values.minio.initImage) }}
+{{- if not .Values.minio.initCommand }}{{ fail "MinIO verified bucket/account/policy initializer required" }}{{ end }}
+{{- else }}
+{{- if .Values.minio.enabled }}{{ fail "minio.enabled must be false when objectStorage.provider is aws-s3" }}{{ end }}
+{{- if .Values.objectStorage.pathStyleAccess }}{{ fail "AWS S3 production profile requires objectStorage.pathStyleAccess=false" }}{{ end }}
+{{- end }}
+{{- if or (not .Values.ranger.configMountPath) (lt (int .Values.ranger.port) 1) }}{{ fail "Ranger config path and HTTP port required" }}{{ end }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bdv.fullname" . }}-contract
+  labels:
+    {{- include "bdv.labels" . | nindent 4 }}
+data:
+  enabled: {{ .Values.deployment.enabled | quote }}
+  bootstrapOnly: {{ .Values.bootstrap.only | quote }}
+  evidenceConfirmed: {{ .Values.deployment.evidenceConfirmed | quote }}
+  objectStorageProvider: {{ default "unconfigured" .Values.objectStorage.provider | quote }}
+  oauth2Enabled: {{ .Values.bdv.oauth2.enabled | quote }}
+  authorizationEnabled: {{ .Values.ranger.authorization.enabled | quote }}
+  status: {{ if .Values.deployment.enabled }}"operator-confirmed-runtime-contracts"{{ else if .Values.bootstrap.only }}"database-and-credential-provisioning-only"{{ else }}"offline-no-workloads"{{ end }}

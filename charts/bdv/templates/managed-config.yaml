@@ -1,0 +1,22 @@
+{{- if and .Values.deployment.enabled .Values.configuration.managed }}
+{{- $n := include "bdv.fullname" . }}
+{{- range $group := list "coordinator" "worker" "catalog" "plugin" }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $n }}-managed-{{ $group }}
+  labels:
+    {{- include "bdv.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: managed-configuration
+data:
+  {{- range $key, $content := index $.Values.configuration.files $group }}
+  {{ $key }}: |-
+{{ tpl $content $ | trim | indent 4 }}
+  {{- end }}
+  {{- if and (eq $group "worker") $.Values.bdv.workerShutdown.enabled }}
+  worker-drain.sh: |-
+{{ $.Files.Get "files/worker-drain.sh" | trim | indent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}

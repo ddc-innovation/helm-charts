@@ -1,0 +1,201 @@
+{{- if .Values.bootstrap.only }}
+{{- $n := include "bdv.fullname" . }}
+{{- $sslMode := required "bootstrap.sslMode is required" .Values.bootstrap.sslMode }}
+{{- if not (has $sslMode (list "REQUIRED" "VERIFY_CA" "VERIFY_IDENTITY")) }}
+{{- fail "bootstrap.sslMode must be REQUIRED, VERIFY_CA, or VERIFY_IDENTITY" }}
+{{- end }}
+{{- $verifyCA := has $sslMode (list "VERIFY_CA" "VERIFY_IDENTITY") }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $n }}-bootstrap-code
+  labels:
+    {{- include "bdv.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-25"
+    helm.sh/hook-delete-policy: before-hook-creation
+data:
+  entrypoint.py: |
+    {{- .Files.Get "files/bootstrap-entrypoint.py" | nindent 4 }}
+  provision.py: |
+    {{- .Files.Get "files/provision.py" | nindent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $n }}-bootstrap
+  labels:
+    {{- include "bdv.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-30"
+    helm.sh/hook-delete-policy: before-hook-creation
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $n }}-bootstrap
+  labels:
+    {{- include "bdv.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-29"
+    helm.sh/hook-delete-policy: before-hook-creation
+rules:
+  # Secret creation is restricted to the release namespace.
+  # Kubernetes cannot restrict create using resourceNames.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      - {{ .Values.bootstrap.hive.secret | quote }}
+      - {{ .Values.bootstrap.ranger.secret | quote }}
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $n }}-bootstrap
+  labels:
+    {{- include "bdv.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-28"
+    helm.sh/hook-delete-policy: before-hook-creation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $n }}-bootstrap
+subjects:
+  - kind: ServiceAccount
+    name: {{ $n }}-bootstrap
+    namespace: {{ .Release.Namespace | quote }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $n }}-bootstrap
+  labels:
+    {{- include "bdv.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: bootstrap-combined
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-20"
+    # Retain the Job until the next bootstrap-only install or upgrade.
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  activeDeadlineSeconds: {{ $.Values.bootstrap.timeoutSeconds }}
+  backoffLimit: {{ $.Values.bootstrap.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "bdv.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: bootstrap-combined
+    spec:
+      securityContext:
+        fsGroup: 10001
+        runAsUser: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+      serviceAccountName: {{ $n }}-bootstrap
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: bootstrap
+          image: {{ include "bdv.image" $.Values.bootstrap.image | quote }}
+          command: ["python3", "/operator/entrypoint.py"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml $.Values.bootstrap.resources | nindent 12 }}
+          env:
+            - name: NAMESPACE
+              value: {{ $.Release.Namespace | quote }}
+            - name: MYSQL_HOST
+              value: {{ $.Values.bootstrap.host | quote }}
+            - name: MYSQL_PORT
+              value: {{ $.Values.bootstrap.port | quote }}
+            - name: MYSQL_SSL_MODE
+              value: {{ $sslMode | quote }}
+            - name: MYSQL_ACCOUNT_HOST
+              value: {{ $.Values.bootstrap.accountHost | quote }}
+            {{- if $verifyCA }}
+            - name: MYSQL_CA
+              value: /ca/ca.crt
+            {{- end }}
+            - name: KUBECTL_HOME
+              value: /tmp
+            - name: HOME
+              value: /tmp
+            - name: DATABASES_JSON
+              value: {{ dict "hive" $.Values.bootstrap.hive "ranger" $.Values.bootstrap.ranger | toJson | quote }}
+          volumeMounts:
+            - name: kubernetes-api
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+            - name: code
+              mountPath: /operator
+              readOnly: true
+            - name: admin
+              mountPath: /admin
+              readOnly: true
+            {{- if $verifyCA }}
+            - name: ca
+              mountPath: /ca
+              readOnly: true
+            {{- end }}
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: kubernetes-api
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        apiVersion: v1
+                        fieldPath: metadata.namespace
+        - name: code
+          configMap:
+            name: {{ $n }}-bootstrap-code
+        - name: admin
+          secret:
+            secretName: {{ required "bootstrap.adminSecret is required" $.Values.bootstrap.adminSecret | quote }}
+            defaultMode: 0440
+        {{- if $verifyCA }}
+        - name: ca
+          secret:
+            secretName: {{ required "bootstrap.caSecret is required for certificate verification" $.Values.bootstrap.caSecret | quote }}
+            items:
+              - key: {{ required "bootstrap.caKey is required for certificate verification" $.Values.bootstrap.caKey | quote }}
+                path: ca.crt
+        {{- end }}
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi
+---
+{{- end }}

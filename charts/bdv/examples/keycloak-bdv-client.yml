@@ -1,0 +1,49 @@
+# Merge this entry into digin-automation keycloak_realm_clients.
+# Do not replace existing clients or put the client secret in this file.
+keycloak_realm_clients:
+  - realm: innonet
+    client_id: bdv
+    name: BDV
+    description: BDV Trino coordinator login
+    state: present
+    enabled: true
+    protocol: openid-connect
+    client_authenticator_type: client-secret
+    public_client: false
+    bearer_only: false
+    standard_flow_enabled: true
+    implicit_flow_enabled: false
+    direct_access_grants_enabled: false
+    service_accounts_enabled: false
+    authorization_services_enabled: false
+    consent_required: false
+    full_scope_allowed: false
+    root_url: https://bdv.dinecodetalkers.com
+    base_url: /
+    admin_url: https://bdv.dinecodetalkers.com
+    redirect_uris:
+      - https://bdv.dinecodetalkers.com/oauth2/callback
+    web_origins:
+      - https://bdv.dinecodetalkers.com
+    attributes:
+      post.logout.redirect.uris: https://bdv.dinecodetalkers.com/ui/logout/logout.html
+    default_client_scopes: [profile, email]
+    protocol_mappers:
+      - name: bdv-audience
+        protocol: openid-connect
+        protocolMapper: oidc-audience-mapper
+        consentRequired: false
+        config:
+          included.client.audience: bdv
+          access.token.claim: 'true'
+          id.token.claim: 'false'
+      - name: groups
+        protocol: openid-connect
+        protocolMapper: oidc-group-membership-mapper
+        consentRequired: false
+        config:
+          claim.name: groups
+          full.path: 'false'
+          id.token.claim: 'true'
+          access.token.claim: 'true'
+          userinfo.token.claim: 'true'

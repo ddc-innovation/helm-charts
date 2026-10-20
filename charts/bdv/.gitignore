@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+values-site.yaml
+values-dev-oidc.yaml
+*.env
+.env*
+backups/
+output/
+*.tar.gz
+files/ranger-install.properties

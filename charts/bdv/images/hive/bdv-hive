@@ -1,0 +1,203 @@
+#!/bin/sh
+set -eu
+umask 077
+
+fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
+
+read_secret() {
+  secret_path=$1
+  test -f "$secret_path" || fail "required Secret file is missing"
+  secret_size=$(wc -c <"$secret_path" | tr -d ' ')
+  secret_value=$(cat "$secret_path")
+  test -n "$secret_value" || fail "required Secret value is empty"
+  test "${#secret_value}" -eq "$secret_size" || fail "Secret value contains a trailing newline"
+  printf '%s' "$secret_value"
+}
+
+xml_escape() {
+  printf '%s' "$1" | sed \
+    -e 's/&/\&amp;/g' \
+    -e 's/</\&lt;/g' \
+    -e 's/>/\&gt;/g' \
+    -e 's/"/\&quot;/g' \
+    -e "s/'/\&apos;/g"
+}
+
+load_database() {
+  DB_HOST=$(read_secret /db/host)
+  DB_PORT=$(read_secret /db/port)
+  DB_NAME=$(read_secret /db/database)
+  DB_USER=$(read_secret /db/username)
+  DB_PASSWORD=$(read_secret /db/password)
+
+  case "$DB_PORT" in *[!0-9]*|'') fail "invalid database port" ;; esac
+  case "$DB_NAME" in *[!A-Za-z0-9_]*|'') fail "invalid database name" ;; esac
+
+  MYSQL_SSL_MODE=${MYSQL_SSL_MODE:-REQUIRED}
+  case "$MYSQL_SSL_MODE" in
+    REQUIRED) ;;
+    *) fail "this Hive image currently supports MYSQL_SSL_MODE=REQUIRED" ;;
+  esac
+
+  DB_TYPE=mysql
+  DB_DRIVER=com.mysql.cj.jdbc.Driver
+  DB_URL="jdbc:mysql://${DB_HOST}:${DB_PORT}/${DB_NAME}?sslMode=REQUIRED"
+  export DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD DB_TYPE DB_DRIVER DB_URL
+}
+
+load_storage() {
+  : "${S3_PROVIDER:?S3_PROVIDER is required}"
+  : "${S3_BUCKET:?S3_BUCKET is required}"
+  : "${S3_REGION:?S3_REGION is required}"
+  : "${S3_PATH_STYLE_ACCESS:?S3_PATH_STYLE_ACCESS is required}"
+
+  case "$S3_PROVIDER" in minio|aws-s3) ;; *) fail "unsupported S3 provider" ;; esac
+  case "$S3_BUCKET" in *[!a-z0-9.-]*|.*|*.) fail "invalid S3 bucket" ;; esac
+  case "$S3_PATH_STYLE_ACCESS" in true|false) ;; *) fail "invalid S3 path-style value" ;; esac
+
+  S3_ACCESS_KEY=$(read_secret /s3/accessKey)
+  S3_SECRET_KEY=$(read_secret /s3/secretKey)
+  S3_ENDPOINT=${S3_ENDPOINT:-}
+
+  if test "$S3_PROVIDER" = minio; then
+    test -n "$S3_ENDPOINT" || fail "MinIO endpoint is required"
+    case "$S3_ENDPOINT" in https://*) S3_SSL_ENABLED=true ;; *) S3_SSL_ENABLED=false ;; esac
+  else
+    S3_SSL_ENABLED=true
+    if test -z "$S3_ENDPOINT"; then
+      S3_ENDPOINT="https://s3.${S3_REGION}.amazonaws.com"
+    fi
+  fi
+}
+
+prepare_config() {
+  load_database
+  load_storage
+
+  conf_dir=${HIVE_CONF_DIR:-/work/hive-conf}
+  mkdir -p "$conf_dir" "$HIVE_LOG_DIR" "$HADOOP_LOG_DIR"
+
+  if test -d /config; then
+    cp -R /config/. "$conf_dir/"
+  fi
+
+  db_driver=$(xml_escape "$DB_DRIVER")
+  db_url=$(xml_escape "$DB_URL")
+  db_user=$(xml_escape "$DB_USER")
+  db_password=$(xml_escape "$DB_PASSWORD")
+  warehouse=$(xml_escape "s3a://${S3_BUCKET}/warehouse")
+  s3_access=$(xml_escape "$S3_ACCESS_KEY")
+  s3_secret=$(xml_escape "$S3_SECRET_KEY")
+  s3_endpoint=$(xml_escape "$S3_ENDPOINT")
+
+  endpoint_property=''
+  if test -n "$S3_ENDPOINT"; then
+    endpoint_property="<property><name>fs.s3a.endpoint</name><value>${s3_endpoint}</value></property>"
+  fi
+
+  cat >"$conf_dir/hive-site.xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+  <property><name>hive.metastore.warehouse.dir</name><value>${warehouse}</value></property>
+  <property><name>hive.metastore.uris</name><value>thrift://0.0.0.0:9083</value></property>
+  <property><name>hive.metastore.schema.verification</name><value>true</value></property>
+  <property><name>javax.jdo.option.ConnectionDriverName</name><value>${db_driver}</value></property>
+  <property><name>javax.jdo.option.ConnectionURL</name><value>${db_url}</value></property>
+  <property><name>javax.jdo.option.ConnectionUserName</name><value>${db_user}</value></property>
+  <property><name>javax.jdo.option.ConnectionPassword</name><value>${db_password}</value></property>
+  <property><name>datanucleus.autoCreateSchema</name><value>false</value></property>
+  <property><name>datanucleus.fixedDatastore</name><value>true</value></property>
+  <property><name>fs.s3a.impl</name><value>org.apache.hadoop.fs.s3a.S3AFileSystem</value></property>
+  <property><name>fs.s3a.aws.credentials.provider</name><value>org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider</value></property>
+  <property><name>fs.s3a.access.key</name><value>${s3_access}</value></property>
+  <property><name>fs.s3a.secret.key</name><value>${s3_secret}</value></property>
+  <property><name>fs.s3a.path.style.access</name><value>${S3_PATH_STYLE_ACCESS}</value></property>
+  <property><name>fs.s3a.connection.ssl.enabled</name><value>${S3_SSL_ENABLED}</value></property>
+  ${endpoint_property}
+</configuration>
+EOF
+
+  cat >"$conf_dir/core-site.xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+  <property><name>fs.s3a.impl</name><value>org.apache.hadoop.fs.s3a.S3AFileSystem</value></property>
+  <property><name>fs.s3a.aws.credentials.provider</name><value>org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider</value></property>
+  <property><name>fs.s3a.access.key</name><value>${s3_access}</value></property>
+  <property><name>fs.s3a.secret.key</name><value>${s3_secret}</value></property>
+  <property><name>fs.s3a.path.style.access</name><value>${S3_PATH_STYLE_ACCESS}</value></property>
+  <property><name>fs.s3a.connection.ssl.enabled</name><value>${S3_SSL_ENABLED}</value></property>
+  ${endpoint_property}
+</configuration>
+EOF
+
+  if ! test -f "$conf_dir/log4j.properties"; then
+    cat >"$conf_dir/log4j.properties" <<'EOF'
+log4j.rootLogger=WARN,console
+log4j.appender.console=org.apache.log4j.ConsoleAppender
+log4j.appender.console.target=System.err
+log4j.appender.console.layout=org.apache.log4j.PatternLayout
+log4j.appender.console.layout.ConversionPattern=%d{ISO8601} %-5p %c: %m%n
+EOF
+  fi
+
+  chmod 0600 "$conf_dir/hive-site.xml" "$conf_dir/core-site.xml" "$conf_dir/log4j.properties"
+  export HIVE_CONF_DIR="$conf_dir"
+  export HADOOP_CONF_DIR="$conf_dir"
+}
+
+wait_database() {
+  timeout=${BDV_CHECK_TIMEOUT:-600}
+  case "$timeout" in *[!0-9]*|'') fail "invalid check timeout" ;; esac
+  elapsed=0
+  until nc -z "$DB_HOST" "$DB_PORT" >/dev/null 2>&1; do
+    test "$elapsed" -lt "$timeout" || fail "database did not become reachable"
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+}
+
+mode=${1:-run}
+case "$mode" in
+  check)
+    if test "${BDV_CHECK_MODE:-}" = prerequisites; then
+      load_database
+      wait_database
+      printf 'PASS: Hive database prerequisite is reachable\n'
+    else
+      nc -z 127.0.0.1 9083 || fail "Hive Metastore is not accepting connections"
+      printf 'PASS: Hive Metastore is accepting connections\n'
+    fi
+    ;;
+  schema)
+    prepare_config
+    wait_database
+    if schematool -dbType mysql -info >/dev/null 2>&1; then
+      schematool -dbType mysql -validate
+      printf 'PASS: existing Hive schema validated\n'
+    else
+      schematool -dbType mysql -initSchema --verbose
+      schematool -dbType mysql -validate
+      printf 'PASS: Hive schema initialized and validated\n'
+    fi
+    S3_CHECK_TIMEOUT=${S3_CHECK_TIMEOUT:-120}
+    case "$S3_CHECK_TIMEOUT" in *[!0-9]*|'') fail "invalid S3 check timeout" ;; esac
+    if timeout --signal=TERM "${S3_CHECK_TIMEOUT}s" \
+      hadoop fs -ls "s3a://${S3_BUCKET}/" >/dev/null; then
+      :
+    else
+      status=$?
+      if test "$status" -eq 124; then
+        fail "Hive warehouse bucket check timed out"
+      fi
+      fail "Hive cannot access the warehouse bucket"
+    fi
+    printf 'PASS: Hive warehouse bucket access verified\n'
+    ;;
+  run)
+    prepare_config
+    wait_database
+    schematool -dbType mysql -validate
+    exec hive --service metastore --hiveconf hive.metastore.uris=thrift://0.0.0.0:9083
+    ;;
+  *) fail "unsupported mode" ;;
+esac

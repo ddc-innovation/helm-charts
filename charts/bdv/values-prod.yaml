@@ -1,0 +1,13 @@
+# Production profile: use AWS S3 and render no MinIO resources.
+# Set bucket and region to the approved production values before deployment.
+objectStorage:
+  provider: aws-s3
+  bucket: ""
+  region: ""
+  endpoint: ""
+  pathStyleAccess: false
+  credentialsSecret: bdv-warehouse-s3
+
+minio:
+  enabled: false
+

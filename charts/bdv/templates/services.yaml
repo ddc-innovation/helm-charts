@@ -1,0 +1,39 @@
+{{- if .Values.deployment.enabled }}
+{{- $n := include "bdv.fullname" . }}
+{{- range $component := list "hive" "ranger" "coordinator" }}
+{{- $c := index $.Values (ternary "bdv" $component (eq $component "coordinator")) }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $n }}-{{ $component }}
+  labels:
+    {{- include "bdv.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  type: ClusterIP
+  {{- if eq $component "coordinator" }}
+  # Trino must announce itself before the SQL readiness probe succeeds.
+  publishNotReadyAddresses: true
+  {{- end }}
+  selector: {app.kubernetes.io/instance: {{ $.Release.Name }}, app.kubernetes.io/component: {{ $component }}}
+  ports:
+    - {name: app, port: {{ $c.port }}, targetPort: {{ $c.port }}}
+{{- end }}
+{{- if .Values.minio.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $n }}-minio
+  labels:
+    {{- include "bdv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: minio
+spec:
+  type: ClusterIP
+  selector: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: minio}
+  ports:
+    - {name: app, port: {{ .Values.minio.port }}, targetPort: {{ .Values.minio.port }}}
+    - {name: console, port: {{ .Values.minio.consolePort }}, targetPort: {{ .Values.minio.consolePort }}}
+{{- end }}
+{{- end }}

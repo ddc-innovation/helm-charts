@@ -1,0 +1,13 @@
+backups/
+*.pre031
+*.bak*
+*.env
+.env*
+*.tar.gz
+__pycache__/
+output/
+values-site.yaml
+values-dev-oidc.yaml
+*.pyc
+
+values-test.yaml

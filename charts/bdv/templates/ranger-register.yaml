@@ -1,0 +1,65 @@
+{{- if .Values.deployment.enabled }}
+{{- $n := include "bdv.fullname" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $n }}-ranger-register-code
+  labels:
+    {{- include "bdv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ranger-registration
+data:
+  register.py: |-
+{{ .Files.Get "files/ranger-register.py" | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $n }}-ranger-register
+  labels:
+    {{- include "bdv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ranger-registration
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "20"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  activeDeadlineSeconds: 660
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        {{- include "bdv.labels" . | nindent 8 }}
+        app.kubernetes.io/component: ranger-registration
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: register
+          image: {{ include "bdv.image" .Values.ranger.image | quote }}
+          command: [python3, /operator/register.py]
+          env:
+            - name: RANGER_URL
+              value: {{ printf "http://%s-ranger:%v" $n .Values.ranger.port | quote }}
+            - {name: RANGER_REGISTRATION_TIMEOUT, value: "600"}
+            - {name: HOME, value: /tmp}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          volumeMounts:
+            - {name: code, mountPath: /operator, readOnly: true}
+            - {name: ranger-credentials, mountPath: /ranger-credentials, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: code, configMap: {name: {{ $n }}-ranger-register-code, defaultMode: 0444}}
+        - {name: ranger-credentials, secret: {secretName: {{ required "ranger.credentialsSecret is required" .Values.ranger.credentialsSecret | quote }}, defaultMode: 0444}}
+        - {name: tmp, emptyDir: {medium: Memory, sizeLimit: 16Mi}}
+{{- end }}

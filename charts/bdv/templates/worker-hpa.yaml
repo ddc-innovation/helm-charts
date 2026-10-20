@@ -1,0 +1,30 @@
+{{- if and .Values.deployment.enabled .Values.bdv.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "bdv.fullname" . }}-worker
+  labels:
+    {{- include "bdv.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "bdv.fullname" . }}-worker
+  minReplicas: {{ .Values.bdv.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.bdv.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.bdv.autoscaling.targetCPUUtilizationPercentage }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies: [{type: Pods, value: 1, periodSeconds: 60}]
+    scaleDown:
+      selectPolicy: {{ ternary "Min" "Disabled" .Values.bdv.autoscaling.scaleDownEnabled }}
+      stabilizationWindowSeconds: {{ .Values.bdv.autoscaling.scaleDownStabilizationSeconds }}
+      policies: [{type: Pods, value: 1, periodSeconds: 120}]
+{{- end }}

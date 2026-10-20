@@ -1,46 +1,42 @@
 {{- define "bdv.name" -}}
-{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
+{{- default .Chart.Name .Values.nameOverride | trunc 28 | trimSuffix "-" -}}
 {{- end -}}
-
+{{- define "bdv.memoryBudget" -}}
+{{- $memory := toString .memory -}}
+{{- if not (regexMatch "^[1-9][0-9]*(Mi|Gi)$" $memory) }}{{ fail "Managed Trino memory limits must use integer Mi or Gi quantities" }}{{ end -}}
+{{- $number := int64 (regexFind "^[0-9]+" $memory) -}}
+{{- $unit := int64 1048576 -}}
+{{- if hasSuffix "Gi" $memory }}{{ $unit = int64 1073741824 }}{{ end -}}
+{{- div (mul $number $unit (int64 .percent)) 100 -}}
+{{- end -}}
 {{- define "bdv.fullname" -}}
-{{- if .Values.fullnameOverride -}}
-{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
-{{- else -}}
-{{- $name := default .Chart.Name .Values.nameOverride -}}
+{{- $name := include "bdv.name" . -}}
 {{- if contains $name .Release.Name -}}
-{{- .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- .Release.Name | trunc 45 | trimSuffix "-" -}}
 {{- else -}}
-{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" -}}
+{{- printf "%s-%s" .Release.Name $name | trunc 45 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
-{{- end -}}
-
 {{- define "bdv.labels" -}}
-helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 app.kubernetes.io/name: {{ include "bdv.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
+helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 {{- end -}}
-
-{{- define "bdv.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "bdv.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-{{- end -}}
-
-{{- define "bdv.serviceAccountName" -}}
-{{- if .Values.serviceAccount.create -}}
-{{- default (include "bdv.fullname" .) .Values.serviceAccount.name -}}
-{{- else -}}
-{{- default "default" .Values.serviceAccount.name -}}
-{{- end -}}
-{{- end -}}
-
 {{- define "bdv.image" -}}
-{{- $registry := .root.Values.global.imageRegistry -}}
-{{- if $registry -}}
-{{- printf "%s/%s:%s" $registry .image.repository .image.tag -}}
+{{- if .digest -}}
+{{- printf "%s@%s" .repository .digest -}}
 {{- else -}}
-{{- printf "%s:%s" .image.repository .image.tag -}}
+{{- printf "%s:%s" .repository .tag -}}
 {{- end -}}
 {{- end -}}
 
+{{- define "bdv.assertImage" -}}
+{{- $i := .image -}}
+{{- if not $i.repository -}}{{- fail (printf "%s.repository is required" .name) -}}{{- end -}}
+{{- if $i.digest -}}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" $i.digest) -}}{{- fail (printf "%s.digest must be SHA256" .name) -}}{{- end -}}
+{{- else -}}
+{{- if or (not $i.tag) (eq $i.tag "latest") -}}{{- fail (printf "%s needs a digest or explicit non-latest tag" .name) -}}{{- end -}}
+{{- end -}}
+{{- end -}}
