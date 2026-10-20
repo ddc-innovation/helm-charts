@@ -80,7 +80,7 @@ helm uninstall bdv --namespace bdv
 After this repository is published through GitHub Pages, users should be able to add it as a Helm repository:
 
 ```bash
-helm repo add digital-innovation https://digital-innovation.github.io/helm-charts
+helm repo add digital-innovation https://ddc-innovation.github.io/helm-charts
 helm repo update
 ```
 
@@ -92,6 +92,20 @@ helm upgrade --install bdv digital-innovation/bdv \
   --create-namespace
 ```
 
+## Automatic BDV publishing
+
+Changes to `charts/bdv` on `main` are validated and published by the
+[BDV publishing workflow](.github/workflows/publish-bdv.yml). It keeps the
+versioned packages and index on `gh-pages` and deploys them through GitHub Pages.
+
+Import the current local `0.1.34` or newer chart source before publishing. Select
+**GitHub Actions** under **Settings > Pages > Build and deployment > Source**.
+The default release bump is minor (`0.1.34` to `0.2.0`); patch releases can be
+selected manually or configured with the `BDV_CHART_BUMP` Actions variable.
+The released package version changes; `Chart.yaml` on `main` is not bot-edited.
+
+See [publishing setup and version behavior](docs/CHART-PUBLISHING.md).
+
 ## Packaging Charts
 
 Each chart should be packaged from the repository root:
@@ -99,7 +113,7 @@ Each chart should be packaged from the repository root:
 ```bash
 helm dependency update charts/bdv
 helm package charts/bdv --destination .repo
-helm repo index .repo --url https://digital-innovation.github.io/helm-charts
+helm repo index .repo --url https://ddc-innovation.github.io/helm-charts
 ```
 
 The generated `.tgz` chart packages and `index.yaml` can be published to GitHub Pages.
@@ -135,4 +149,5 @@ app-factory
 ```
 
 Avoid spaces, underscores, or organization-specific prefixes in chart names.
+
 
