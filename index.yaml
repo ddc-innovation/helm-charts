@@ -3,7 +3,18 @@ entries:
   bdv:
   - apiVersion: v2
     appVersion: "372"
-    created: "2026-10-20T21:07:29.347211456Z"
+    created: "2026-10-23T03:01:48.092142671Z"
+    description: BDV runtime and recoverable remote MySQL provisioning, with deployment
+      evidence gates
+    digest: 2517c0e1034c9a08d8d00de278531f6406487f8df0cf855f32188fd083153121
+    name: bdv
+    type: application
+    urls:
+    - https://ddc-innovation.github.io/helm-charts/bdv-0.3.0.tgz
+    version: 0.3.0
+  - apiVersion: v2
+    appVersion: "372"
+    created: "2026-10-23T03:01:48.088208654Z"
     description: BDV runtime and recoverable remote MySQL provisioning, with deployment
       evidence gates
     digest: adfe63a7c2f16a1cf06203ace2b476326379ae798effe86a8afc66be408d6bba
@@ -14,7 +25,7 @@ entries:
     version: 0.2.0
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-10-20T21:07:29.343291228Z"
+    created: "2026-10-23T03:01:48.08446371Z"
     dependencies:
     - condition: minio.enabled
       name: minio
@@ -51,4 +62,4 @@ entries:
     urls:
     - https://ddc-innovation.github.io/helm-charts/bdv-0.1.0.tgz
     version: 0.1.0
-generated: "2026-10-20T21:07:29.337667072Z"
+generated: "2026-10-23T03:01:48.079023149Z"
