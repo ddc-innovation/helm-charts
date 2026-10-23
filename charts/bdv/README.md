@@ -25,6 +25,9 @@ for exact evidence and limitations. Historical pending statements below describe
 the state when their earlier package versions were produced. Version 0.1.35 adds
 operator scripts and documentation; it does not change runtime defaults or images.
 
+See [additional buckets, Hive schemas and Ranger grants](docs/ADDITIONAL-BUCKETS.md)
+for declaring `pnt-lake` and `pnt-artifacts` without changing the default warehouse.
+
 ## Contents
 
 1. Architecture and prerequisites

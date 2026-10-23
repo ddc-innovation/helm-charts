@@ -1,3 +1,12 @@
+{{- $additionalBuckets := .Values.objectStorage.additionalBuckets | default list }}
+{{- if and $additionalBuckets (or (ne .Values.objectStorage.provider "minio") (not .Values.minio.enabled)) }}{{ fail "additionalBuckets requires managed MinIO" }}{{ end }}
+{{- if has .Values.objectStorage.bucket $additionalBuckets }}{{ fail "Default bucket must not be repeated in additionalBuckets" }}{{ end }}
+{{- $schemaNames := dict }}
+{{- range .Values.hive.schemas | default list }}
+{{- if hasKey $schemaNames .name }}{{ fail "Hive schema names must be unique" }}{{ end }}
+{{- $_ := set $schemaNames .name true }}
+{{- if not (has .bucket (prepend $additionalBuckets $.Values.objectStorage.bucket)) }}{{ fail "Hive schema must reference a declared bucket" }}{{ end }}
+{{- end }}
 {{- $active := or .Values.deployment.enabled .Values.bootstrap.only }}
 {{- if and .Values.deployment.enabled .Values.bootstrap.only }}{{ fail "bootstrap.only and deployment.enabled cannot both be true" }}{{ end }}
 {{- if $active }}

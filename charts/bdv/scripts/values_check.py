@@ -57,6 +57,31 @@ def check(v, mode):
             tag = value.get('tag', '')
             need(bool(re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}', tag)) and tag != 'latest', name + ' needs a digest or explicit non-latest tag')
     need(bool(re.fullmatch(r'1\.[0-9]+\.[0-9]+', str(v.get('kubernetesVersion', '')))), 'Explicit kubernetesVersion required, e.g. 1.36.4')
+    storage = v.get('objectStorage', {})
+    additional = storage.get('additionalBuckets', [])
+    schemas = v.get('hive', {}).get('schemas', [])
+    need(isinstance(additional, list), 'objectStorage.additionalBuckets must be a list')
+    additional = additional if isinstance(additional, list) else []
+    valid_buckets = all(isinstance(b, str) and re.fullmatch(r'[a-z0-9][a-z0-9-]{1,61}[a-z0-9]', b) for b in additional)
+    need(valid_buckets, 'Additional bucket names must use 3..63 lowercase letters, numbers or hyphens')
+    if valid_buckets:
+        need(len(additional) == len(set(additional)), 'Additional buckets must be unique')
+        need(storage.get('bucket') not in additional, 'Default bucket must not be repeated in additionalBuckets')
+    if additional:
+        need(storage.get('provider') == 'minio' and v.get('minio', {}).get('enabled') is True,
+             'additionalBuckets currently requires the managed MinIO provider')
+    need(isinstance(schemas, list), 'hive.schemas must be a list')
+    names = []
+    for schema in schemas if isinstance(schemas, list) else []:
+        if not isinstance(schema, dict):
+            errors.append('Hive schema entries must be mappings')
+            continue
+        name = schema.get('name', '')
+        need(isinstance(name, str) and bool(re.fullmatch(r'[a-z][a-z0-9_]*', name)), 'Invalid Hive schema name')
+        if isinstance(name, str):
+            names.append(name)
+        need(schema.get('bucket') in [storage.get('bucket')] + additional, 'Hive schema must reference a declared bucket')
+    need(len(names) == len(set(names)), 'Hive schema names must be unique')
     if mode == 'offline':
         return errors
     b = v['bootstrap']
