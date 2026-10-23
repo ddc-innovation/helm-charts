@@ -49,7 +49,7 @@ def validate(settings):
         raise ValueError('Users must be unique explicit names')
     if settings.get('smokeCreator') and settings['smokeCreator'] not in users:
         raise ValueError('Smoke creator must be an explicitly declared user')
-    for grant in settings['grants']:
+    for grant in settings['grants'] + settings.get('additionalGrants', []):
         if not grant['resources'] or not grant['users'] or not grant['accesses']:
             raise ValueError('Empty grant is refused')
         if not set(grant['users']) <= set(users):
@@ -175,7 +175,7 @@ def reconcile(api, settings):
         if verified.get('name') != user:
             raise RuntimeError('User readback failed')
         print('PASS: Ranger identity exists:', user, flush=True)
-    grants = copy.deepcopy(settings['grants'])
+    grants = copy.deepcopy(settings['grants'] + settings.get('additionalGrants', []))
     if settings.get('smokeCreator'):
         grants.append({'name': 'bdv-smoke-creator', 'users': [settings['smokeCreator']],
                        'resources': {'catalog': ['hive'], 'schema': ['default'],

@@ -237,7 +237,7 @@
         "bdvHost": {
           "type": "string"
         },
-                "rangerHost": {
+        "rangerHost": {
           "type": "string"
         },
         "minioHost": {
@@ -365,6 +365,29 @@
               "pattern": "^(sha256:[0-9a-f]{64})?$"
             }
           }
+        },
+        "schemas": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "bucket"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]*$"
+              },
+              "bucket": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 63,
+                "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$"
+              }
+            }
+          }
         }
       }
     },
@@ -408,6 +431,23 @@
               "pattern": "^(sha256:[0-9a-f]{64})?$"
             }
           }
+        },
+        "authorization": {
+          "type": "object",
+          "properties": {
+            "additionalGrants": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "resources",
+                  "users",
+                  "accesses"
+                ]
+              }
+            }
+          }
         }
       }
     },
@@ -448,6 +488,16 @@
         "credentialsSecret": {
           "type": "string",
           "minLength": 1
+        },
+        "additionalBuckets": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 63,
+            "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$"
+          }
         }
       }
     }

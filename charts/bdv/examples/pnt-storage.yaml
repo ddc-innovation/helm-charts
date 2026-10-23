@@ -1,0 +1,101 @@
+# Site-specific overlay. Apply after your complete current site values.
+objectStorage:
+  additionalBuckets:
+  - pnt-lake
+  - pnt-artifacts
+hive:
+  schemas:
+  - name: pnt_lake
+    bucket: pnt-lake
+  - name: pnt_artifacts
+    bucket: pnt-artifacts
+ranger:
+  authorization:
+    enabled: true
+    additionalGrants:
+    - name: bdv-pnt_lake-schema
+      resources:
+        catalog:
+        - hive
+        schema:
+        - pnt_lake
+      users: &id001
+      - richard.stevens@ddc-dine.com
+      - michael.peterson@ddc-dine.com
+      accesses:
+      - create
+      - drop
+      - alter
+      - use
+      - show
+    - name: bdv-pnt_lake-tables
+      resources:
+        catalog:
+        - hive
+        schema:
+        - pnt_lake
+        table:
+        - '*'
+      users: *id001
+      accesses:
+      - create
+      - drop
+      - alter
+      - insert
+      - delete
+      - show
+    - name: bdv-pnt_lake-columns
+      resources:
+        catalog:
+        - hive
+        schema:
+        - pnt_lake
+        table:
+        - '*'
+        column:
+        - '*'
+      users: *id001
+      accesses:
+      - select
+    - name: bdv-pnt_artifacts-schema
+      resources:
+        catalog:
+        - hive
+        schema:
+        - pnt_artifacts
+      users: *id001
+      accesses:
+      - create
+      - drop
+      - alter
+      - use
+      - show
+    - name: bdv-pnt_artifacts-tables
+      resources:
+        catalog:
+        - hive
+        schema:
+        - pnt_artifacts
+        table:
+        - '*'
+      users: *id001
+      accesses:
+      - create
+      - drop
+      - alter
+      - insert
+      - delete
+      - show
+    - name: bdv-pnt_artifacts-columns
+      resources:
+        catalog:
+        - hive
+        schema:
+        - pnt_artifacts
+        table:
+        - '*'
+        column:
+        - '*'
+      users: *id001
+      accesses:
+      - select

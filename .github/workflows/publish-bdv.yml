@@ -57,6 +57,11 @@ jobs:
           helm lint charts/bdv
           helm template bdv charts/bdv --namespace bdv > /dev/null
 
+      - name: Run BDV regression tests
+        env:
+          HELM: helm
+        run: bash charts/bdv/scripts/test-all.sh
+
   publish:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: validate

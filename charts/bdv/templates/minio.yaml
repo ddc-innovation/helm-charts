@@ -1,5 +1,18 @@
 {{- if and .Values.deployment.enabled .Values.minio.enabled }}
 {{- $n := include "bdv.fullname" . }}
+{{- $additional := .Values.objectStorage.additionalBuckets | default list }}
+{{- if $additional }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $n }}-additional-buckets
+  labels:
+    {{- include "bdv.labels" . | nindent 4 }}
+data:
+  reconcile.sh: |-
+{{ .Files.Get "files/minio-additional-buckets.sh" | nindent 4 }}
+---
+{{- end }}
 {{- if not .Values.storage.existingMinioClaim }}
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -87,7 +100,19 @@ spec:
       containers:
         - name: buckets
           image: {{ include "bdv.image" .Values.minio.initImage | quote }}
+          {{- if $additional }}
+          command: [/bin/sh, -ec]
+          args:
+            - |-
+              "$@"
+              exec /bin/sh /storage-init/reconcile.sh
+            - bdv-storage-init
+            {{- range .Values.minio.initCommand }}
+            - {{ . | quote }}
+            {{- end }}
+          {{- else }}
           command: {{ .Values.minio.initCommand | toJson }}
+          {{- end }}
           securityContext:
             runAsNonRoot: true
             runAsUser: 100
@@ -99,9 +124,15 @@ spec:
             - {name: S3_ENDPOINT, value: {{ printf "http://%s-minio:%v" $n .Values.minio.port | quote }}}
             - {name: S3_BUCKET, value: {{ .Values.objectStorage.bucket | quote }}}
             - {name: S3_REGION, value: {{ .Values.objectStorage.region | quote }}}
+            {{- if $additional }}
+            - {name: S3_ADDITIONAL_BUCKETS, value: {{ join " " $additional | quote }}}
+            {{- end }}
           volumeMounts:
             - {name: admin, mountPath: /admin, readOnly: true}
             - {name: app, mountPath: /s3, readOnly: true}
+            {{- if $additional }}
+            - {name: storage-init, mountPath: /storage-init, readOnly: true}
+            {{- end }}
             - {name: tmp, mountPath: /tmp}
           resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {cpu: '1', memory: 512Mi}}
       volumes:
@@ -109,5 +140,8 @@ spec:
           secret: {secretName: {{ .Values.minio.adminSecret }}}
         - name: app
           secret: {secretName: {{ .Values.objectStorage.credentialsSecret }}}
+        {{- if $additional }}
+        - {name: storage-init, configMap: {name: {{ $n }}-additional-buckets}}
+        {{- end }}
         - {name: tmp, emptyDir: {medium: Memory, sizeLimit: 64Mi}}
 {{- end }}
