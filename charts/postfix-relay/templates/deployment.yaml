@@ -1,0 +1,118 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "postfix-relay.fullname" . }}
+  labels:
+    {{- include "postfix-relay.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "postfix-relay.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "postfix-relay.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/postfix-config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: postfix-relay
+          image: {{ include "postfix-relay.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: smtp
+              containerPort: 2525
+              protocol: TCP
+            - name: metrics
+              containerPort: 9154
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: postfix-config
+              mountPath: /etc/postfix/main.cf
+              subPath: main.cf
+              readOnly: true
+            - name: postfix-config
+              mountPath: /etc/postfix/master.cf
+              subPath: master.cf
+              readOnly: true
+            - name: postfix-config
+              mountPath: /etc/postfix/allowed_senders
+              subPath: allowed_senders
+              readOnly: true
+            - name: postfix-config
+              mountPath: /etc/postfix/header_checks
+              subPath: header_checks
+              readOnly: true
+            - name: smtp-credentials
+              mountPath: /run/secrets/postfix
+              readOnly: true
+            - name: runtime
+              mountPath: /run/postfix
+            - name: data
+              mountPath: /var/lib/postfix
+            - name: queue
+              mountPath: /var/spool/postfix
+      volumes:
+        - name: postfix-config
+          configMap:
+            name: {{ include "postfix-relay.fullname" . }}-config
+            defaultMode: 0444
+        - name: smtp-credentials
+          secret:
+            secretName: {{ .Values.postfix.existingSecret }}
+            defaultMode: 0440
+        - name: runtime
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+        - name: data
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: queue
+          persistentVolumeClaim:
+            claimName: {{ include "postfix-relay.fullname" . }}-queue
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+

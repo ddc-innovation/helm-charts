@@ -1,0 +1,38 @@
+{{- if .Values.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "postfix-relay.fullname" . }}
+  labels:
+    {{- include "postfix-relay.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: postfix-relay.rules
+      rules:
+        - alert: PostfixRelayDown
+          expr: absent(postfix_relay_up{namespace={{ .Release.Namespace | quote }}}) or max(postfix_relay_up{namespace={{ .Release.Namespace | quote }}}) == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Application mail relay metrics are unavailable
+        - alert: PostfixRelayQueueGrowing
+          expr: max(postfix_relay_queue_messages{namespace={{ .Release.Namespace | quote }}}) > 100
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Application mail relay queue has more than 100 messages
+        - alert: PostfixRelayOldestMessage
+          expr: max(postfix_relay_queue_oldest_age_seconds{namespace={{ .Release.Namespace | quote }}}) > 1800
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Application mail relay has queued mail older than 30 minutes
+{{- end }}
+
+

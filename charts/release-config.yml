@@ -1,0 +1,14 @@
+charts:
+  bdv:
+    path: charts/bdv
+    namespace: bdv
+    bump: minor
+    minimum_source_version: 0.1.34
+    tests:
+      - [bash, charts/bdv/scripts/test-all.sh]
+  postfix-relay:
+    path: charts/postfix-relay
+    namespace: app-mail
+    bump: patch
+    set:
+      image.digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

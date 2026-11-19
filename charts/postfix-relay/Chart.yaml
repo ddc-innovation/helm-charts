@@ -1,0 +1,8 @@
+apiVersion: v2
+name: postfix-relay
+description: Non-root Postfix application alert relay for Exchange Online
+type: application
+version: 0.1.0
+appVersion: "3.12-20260831-nonprod-unprivileged"
+
+
