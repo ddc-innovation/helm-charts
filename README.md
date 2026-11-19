@@ -26,6 +26,7 @@ helm-charts/
 | Chart | Purpose |
 | --- | --- |
 | `bdv` | BDV data platform chart. Intended for Trino coordinator, Trino workers, Apache Ranger, Hive Metastore, and optional dependencies such as MinIO or Percona. |
+| `postfix-relay` | Rootless internal application-alert SMTP relay for Exchange Online. |
 | `data-flow` | Data Flow accelerator chart. Intended for Apache NiFi based ingestion and movement patterns. |
 | `test-ops` | Test operations chart. Intended for test automation and validation workloads. |
 | `app-factory` | Application Factory chart. Intended for application build, deployment, and developer enablement workloads. |
@@ -105,6 +106,19 @@ selected manually or configured with the `BDV_CHART_BUMP` Actions variable.
 The released package version changes; `Chart.yaml` on `main` is not bot-edited.
 
 See [publishing setup and version behavior](docs/CHART-PUBLISHING.md).
+
+## Automatic Postfix relay publishing
+
+Changes to `charts/postfix-relay` on `main` are validated, packaged, added to
+the retained `gh-pages` Helm index, and deployed through GitHub Pages. The
+initial package uses the source version; later source changes increment the
+published patch version without bot-editing `Chart.yaml` on `main`.
+
+```bash
+helm repo add digital-innovation https://ddc-innovation.github.io/helm-charts/
+helm repo update
+helm show chart digital-innovation/postfix-relay --version 0.1.0
+```
 
 ## Packaging Charts
 

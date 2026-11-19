@@ -27,7 +27,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: bdv-helm-publishing-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  group: ${{ github.event_name == 'pull_request' && format('{0}-{1}', github.workflow, github.ref) || 'helm-pages-publishing-main' }}
   cancel-in-progress: false
 
 jobs:

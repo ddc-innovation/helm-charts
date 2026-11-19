@@ -1,0 +1,8 @@
+Applications send SMTP to {{ .Values.postfix.hostname }}:{{ .Values.service.port }}.
+pfSense must route that internal DNS name to 192.168.250.1 and HAProxy must
+forward TCP/25 to the RKE2 worker NodePort {{ .Values.service.nodePort }}.
+
+Sender policy permits only {{ .Values.postfix.allowedSender }}.
+Queue PVC {{ include "postfix-relay.fullname" . }}-queue is retained on uninstall.
+
+
