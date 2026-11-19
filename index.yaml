@@ -3,7 +3,7 @@ entries:
   bdv:
   - apiVersion: v2
     appVersion: "372"
-    created: "2026-10-23T03:01:48.092142671Z"
+    created: "2026-11-19T01:38:59.207942755Z"
     description: BDV runtime and recoverable remote MySQL provisioning, with deployment
       evidence gates
     digest: 2517c0e1034c9a08d8d00de278531f6406487f8df0cf855f32188fd083153121
@@ -14,7 +14,7 @@ entries:
     version: 0.3.0
   - apiVersion: v2
     appVersion: "372"
-    created: "2026-10-23T03:01:48.088208654Z"
+    created: "2026-11-19T01:38:59.204600836Z"
     description: BDV runtime and recoverable remote MySQL provisioning, with deployment
       evidence gates
     digest: adfe63a7c2f16a1cf06203ace2b476326379ae798effe86a8afc66be408d6bba
@@ -25,7 +25,7 @@ entries:
     version: 0.2.0
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-10-23T03:01:48.08446371Z"
+    created: "2026-11-19T01:38:59.201570523Z"
     dependencies:
     - condition: minio.enabled
       name: minio
@@ -62,4 +62,15 @@ entries:
     urls:
     - https://ddc-innovation.github.io/helm-charts/bdv-0.1.0.tgz
     version: 0.1.0
-generated: "2026-10-23T03:01:48.079023149Z"
+  postfix-relay:
+  - apiVersion: v2
+    appVersion: 3.12-20260831-nonprod-unprivileged
+    created: "2026-11-19T01:38:59.20910854Z"
+    description: Non-root Postfix application alert relay for Exchange Online
+    digest: 03bcd5a91dedde47ad09b1a7e9425ed9bdfd434d9c5151295fac5578d20de2e8
+    name: postfix-relay
+    type: application
+    urls:
+    - https://ddc-innovation.github.io/helm-charts/postfix-relay-0.1.0.tgz
+    version: 0.1.0
+generated: "2026-11-19T01:38:59.19732053Z"
