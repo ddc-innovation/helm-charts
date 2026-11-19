@@ -93,32 +93,26 @@ helm upgrade --install bdv digital-innovation/bdv \
   --create-namespace
 ```
 
-## Automatic BDV publishing
+## Automatic multi-chart publishing
 
-Changes to `charts/bdv` on `main` are validated and published by the
-[BDV publishing workflow](.github/workflows/publish-bdv.yml). It keeps the
-versioned packages and index on `gh-pages` and deploys them through GitHub Pages.
+One workflow validates and publishes every chart listed in
+`charts/release-config.yml`. Packages share the retained `gh-pages` index and
+the GitHub Pages repository at `https://ddc-innovation.github.io/helm-charts/`.
+Adding another chart requires its source under `charts/` and one configuration
+entry; it does not require another workflow or release script.
 
-Import the current local `0.1.34` or newer chart source before publishing. Select
-**GitHub Actions** under **Settings > Pages > Build and deployment > Source**.
-The default release bump is minor (`0.1.34` to `0.2.0`); patch releases can be
-selected manually or configured with the `BDV_CHART_BUMP` Actions variable.
-The released package version changes; `Chart.yaml` on `main` is not bot-edited.
-
-See [publishing setup and version behavior](docs/CHART-PUBLISHING.md).
-
-## Automatic Postfix relay publishing
-
-Changes to `charts/postfix-relay` on `main` are validated, packaged, added to
-the retained `gh-pages` Helm index, and deployed through GitHub Pages. The
-initial package uses the source version; later source changes increment the
-published patch version without bot-editing `Chart.yaml` on `main`.
+The initial package uses the source version. Later changes use each chart's
+configured major, minor, or patch policy without bot-editing `Chart.yaml` on
+`main`. Publishing is serialized so multiple chart changes cannot race while
+updating the shared index.
 
 ```bash
 helm repo add digital-innovation https://ddc-innovation.github.io/helm-charts/
 helm repo update
 helm show chart digital-innovation/postfix-relay --version 0.1.0
 ```
+
+See [publishing setup and version behavior](docs/CHART-PUBLISHING.md).
 
 ## Packaging Charts
 

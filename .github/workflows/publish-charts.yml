@@ -1,20 +1,20 @@
-name: Publish Postfix relay Helm chart
+name: Validate and publish Helm charts
 
 on:
   push:
     branches: [main]
     paths:
-      - 'charts/postfix-relay/**'
-      - 'scripts/release-postfix-relay.py'
-      - 'tests/test_release_postfix_relay.py'
-      - '.github/workflows/publish-postfix-relay.yml'
+      - 'charts/**'
+      - 'scripts/release-charts.py'
+      - 'tests/test_release_charts.py'
+      - '.github/workflows/publish-charts.yml'
   pull_request:
     branches: [main]
     paths:
-      - 'charts/postfix-relay/**'
-      - 'scripts/release-postfix-relay.py'
-      - 'tests/test_release_postfix_relay.py'
-      - '.github/workflows/publish-postfix-relay.yml'
+      - 'charts/**'
+      - 'scripts/release-charts.py'
+      - 'tests/test_release_charts.py'
+      - '.github/workflows/publish-charts.yml'
   workflow_dispatch:
 
 permissions:
@@ -35,20 +35,12 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install 'PyYAML==6.0.2'
-      - run: python -m unittest discover -s tests -p 'test_release_postfix_relay.py' -v
+      - run: python -m unittest discover -s tests -p 'test_release_charts.py' -v
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:
           version: v3.17.3
-      - name: Lint and render chart
-        shell: bash
-        run: |
-          set -euo pipefail
-          digest='sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-          helm lint charts/postfix-relay --set-string "image.digest=$digest"
-          helm template postfix-relay charts/postfix-relay \
-            --namespace app-mail \
-            --set-string "image.digest=$digest" \
-            >/dev/null
+      - name: Validate every configured chart
+        run: python scripts/release-charts.py --validate-only
 
   publish:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -81,17 +73,16 @@ jobs:
       - name: Configure GitHub Pages
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
         id: pages
-      - name: Build the next chart release
+      - name: Package every changed chart into the retained index
         env:
           REPOSITORY_URL: ${{ steps.pages.outputs.base_url }}
           SOURCE_SHA: ${{ github.sha }}
         run: |
-          python scripts/release-postfix-relay.py \
-            --chart charts/postfix-relay \
+          python scripts/release-charts.py \
             --site .published \
             --url "$REPOSITORY_URL" \
             --source-sha "$SOURCE_SHA"
-      - name: Commit the package and index to gh-pages
+      - name: Commit packages and index to gh-pages
         env:
           SOURCE_SHA: ${{ github.sha }}
         run: |
@@ -100,7 +91,7 @@ jobs:
           git -C .published config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git -C .published add .
           if ! git -C .published diff --cached --quiet; then
-            git -C .published commit -m "Publish Postfix relay chart from ${SOURCE_SHA}"
+            git -C .published commit -m "Publish Helm charts from ${SOURCE_SHA}"
             git -C .published push origin HEAD:gh-pages
           fi
       - name: Prepare Pages files without Git metadata
