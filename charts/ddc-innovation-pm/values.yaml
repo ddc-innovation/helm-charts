@@ -1,0 +1,616 @@
+# =============================================================================
+# ddc-innovation-pm — generic values (layer 1 of 3, plan §5)
+# =============================================================================
+# Compose with exactly one environment overlay:
+#
+#   helm template ddc-innovation-pm . -n ddc-pm \
+#       -f values.yaml -f values-prod.yaml --set image.tag=<tag>
+#
+# In practice this is assembled by scripts/deploy/helm-deploy.ps1; the tag is the
+# one you gave scripts/deploy/build-push-images.ps1 -Tag. See
+# scripts/deploy/README.md, "Where the image tag comes from", for why it is never
+# derived from git.
+#
+#   values.yaml       generic defaults (this file) — no host, no tag, no creds
+#   values-prod.yaml  the single public host + Production/Keycloak
+#   values-dev.yaml   no ingress, Development, header auth, own namespace
+#
+# THIS FILE MUST NEVER CONTAIN (guards in templates/_helpers.tpl enforce it):
+#   * an image tag        — a floating/:latest tag makes `helm rollback`
+#                           meaningless and "which build is live?" unanswerable
+#   * an ingress host     — there is ONE public DNS name for this project and it
+#                           belongs to Production; a dev render must own none
+#   * a credential value  — D10: values carry Secret NAMES and KEYS only
+#
+# The Keycloak issuer in `keycloak.baseUrl` is deliberately NOT a violation of
+# the host rule: it is a shared third-party host owned by Keycloak (identical in
+# every environment), in the same category as the image repositories. Only the
+# APP's own host (`ingress.host`) is Production-owned. Moving the issuer into
+# values-prod.yaml would make the dev render emit an empty issuer.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Namespace — risk R11: `ddc-pm` is ONE CHARACTER from `ddc-pme`
+# -----------------------------------------------------------------------------
+# `ddc-pme` hosts a DIFFERENT live application (pme-api) and the deployer
+# ServiceAccount. A typo does not error; it silently redeploys onto the wrong
+# app. Empty = take the namespace from `helm --namespace` (so `-n ddc-pm`
+# decides it). When set, `_helpers.tpl` asserts it EQUALS the `--namespace`
+# flag, so a mismatched pair fails the render instead of deploying twice.
+namespace: ""
+
+# Namespaces this chart refuses to render into, checked against both
+# `--namespace` and `.Values.namespace`.
+forbiddenNamespaces:
+  - ddc-pme
+  - kube-system
+
+nameOverride: ""
+# Names are pinned rather than derived from the release name. The API Service
+# MUST stay literally `api`: nginx inside the web image proxies to
+# http://api:8080 by that name (nginx/nginx.conf, `location /api/`), so renaming
+# it turns the UI into 502s (risk R6). `_helpers.tpl` also refuses any fullname
+# that would rename the API or web Service away from `api` / `web`.
+fullnameOverride: ddc-innovation-pm
+
+# Extra labels and annotations applied to EVERY object this chart renders.
+# Both are empty by default and are the only supported way to attach metadata
+# that this chart cannot anticipate (a cost-centre label, a Rancher field owner,
+# an ArgoCD sync-wave annotation).
+#
+# They are declared here rather than left implicit because the alternative is an
+# operator reading `_helpers.tpl` to discover the hook exists — and an
+# undocumented extension point is one nobody uses, so the requirement gets met by
+# hand-editing a template instead, which is then overwritten by the next upgrade.
+#
+# Labels land in `metadata.labels` only, never in a `spec.selector.matchLabels`.
+# Selectors are immutable in Kubernetes, so a label added here after the first
+# install would make every subsequent `helm upgrade` fail with "field is
+# immutable" — the commonLabels helper deliberately does not feed selectors.
+commonLabels: {}
+commonAnnotations: {}
+
+# -----------------------------------------------------------------------------
+# Environment shape (plan §5: these two are the prod/dev layer switches)
+# -----------------------------------------------------------------------------
+# Rendered as ASPNETCORE_ENVIRONMENT and Auth__Mode. The API refuses to start in
+# Production with anything but Keycloak (Security/AuthOptions.cs:152-157), and
+# `_helpers.tpl` fails the render on that combination up front (risk R9) rather
+# than leaving it to CrashLoopBackOff.
+aspnetcoreEnvironment: Production
+authMode: Keycloak
+
+# Which source wins for sign-in settings: Database (default) or Configuration.
+# Database means an active `identity_provider_connections` row OVERRIDES the
+# `keycloak:` block below, so a values change there can be inert (see the note on
+# that block). Set this to Configuration as break-glass to make the `keycloak:`
+# block authoritative — the case that matters is recovering when a bad row has
+# locked everyone out and the API cannot validate any token.
+#
+# Empty = do not set the variable, so the application default (Database) applies.
+# Rendered as Auth__IdentitySettingsSource.
+# (Security/AuthOptions.cs:57-64,169-174.)
+identitySettingsSource: ""
+
+# -----------------------------------------------------------------------------
+# Images
+# -----------------------------------------------------------------------------
+image:
+  # Production images live in the private InnoNet Harbor project. Credentials
+  # remain in the pre-created dcipm-registry-pull Secret below; values files
+  # contain repository coordinates only.
+  repository: harbor.dinecodetalkers.com/ddc-innovation-pm/dcipm-api
+  # REQUIRED, no default: rendering fails while empty. Passed on --set by
+  # scripts/deploy/helm-deploy.ps1, whose value must be the tag you built with
+  # scripts/deploy/build-push-images.ps1 -Tag:
+  #   --set image.tag=949f353
+  # `latest` and branch-like tags are also refused (see _helpers.tpl).
+  tag: ""
+  pullPolicy: IfNotPresent
+
+web:
+  image:
+    repository: harbor.dinecodetalkers.com/ddc-innovation-pm/dcipm-web
+    # Empty = reuse image.tag so one --set moves both workloads together.
+    tag: ""
+    pullPolicy: IfNotPresent
+    # Build ARGs of Dockerfile.web. They belong to the IMAGE BUILD, not to the
+    # running container: VITE_* is compiled into the JS bundle, so changing this
+    # without a rebuild changes nothing at runtime. It is mirrored into the web
+    # Deployment as an env var purely so `kubectl describe` shows the contract
+    # the image was built against. nginx routes /api/ to the `api` Service, which
+    # is why the base URL is a same-origin relative path.
+    #
+    # VITE_DATA_SOURCE is the switch behind `isApiDataSource`
+    # (apps/web/src/api/client.ts). It gates ~20 live-data screens AND the account
+    # menu's GET /api/v1/me, and it is the reason a deployment can sign in through
+    # SSO yet show every user "No DCIPM roles assigned": with the variable unset the
+    # flag compiles to false, the gated code is tree-shaken out of the bundle, and the
+    # name/e-mail keep coming from the ID token while roles have no source at all.
+    # Nothing in the chart can correct that - only a rebuild can.
+    buildArgs:
+      VITE_API_BASE_URL: /api/v1
+      VITE_DATA_SOURCE: api
+
+  # Static, stateless files: two replicas are safe here. The API's count of 1 is a
+  # correctness constraint (background workers with no leader election); nothing
+  # in the web tier has that property.
+  replicaCount: 2
+  containerPort: 80
+
+  # Mirror of web.image.buildArgs. These are baked into the JS bundle at
+  # image-build time, so setting them here changes nothing at runtime — they exist so
+  # `kubectl describe pod` shows the contract the image was supposed to be built
+  # with, which turns "the UI is calling the wrong endpoint" into an evidence
+  # question instead of a guess.
+  env:
+    VITE_API_BASE_URL: /api/v1
+    VITE_DATA_SOURCE: api
+  extraEnv: []
+
+  # nginx answers `/` from the SPA bundle, so a 200 on the root path proves both
+  # that nginx is up and that the bundle is being served. There is no /healthz
+  # here either.
+  probes:
+    liveness:
+      enabled: true
+      path: /
+      periodSeconds: 30
+      timeoutSeconds: 3
+      failureThreshold: 3
+    readiness:
+      enabled: true
+      path: /
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+  # nginx:1.27-alpine serves as uid/gid 101 and writes /var/cache/nginx and
+  # /var/run/nginx.pid, so the writable mounts below are what make a non-root
+  # container possible at all. If the image is rebuilt in a way that cannot start
+  # this way, set podSecurityContext to {} and record the exception rather than
+  # leaving the pod in CrashLoop.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 101
+    runAsGroup: 101
+    fsGroup: 101
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+  cacheVolume:
+    enabled: true
+    mountPath: /var/cache/nginx
+    emptyDir: {}
+  runVolume:
+    enabled: true
+    # /var/run, NOT /var/run/nginx. The stock config writes its pid file to
+    # /run/nginx.pid (`pid /run/nginx.pid;` in nginx.conf, and /var/run is a symlink
+    # to /run), so the directory that has to be writable is /var/run itself. An
+    # emptyDir at /var/run/nginx creates a writable SUBLITERAL and leaves /run
+    # read-only, so nginx reaches "start worker processes" and then exits 1:
+    #   [emerg] open() "/run/nginx.pid" failed (13: Permission denied)
+    # Verified against the production nginx image as --user 101:101
+    # as --user 101:101 with the two mounts this block renders: CrashLoopBackOff with
+    # that emerg, and HTTP 200 on / once this path became /var/run. The container dies
+    # only AFTER "start worker processes", which is why cluster events say
+    # "connection refused on :80" and never name the pid file: nothing is listening.
+    # Mounting over /var/run hides /run/lock (root-owned in the image); nginx does not
+    # use it, checked by listing /run in the running container.
+    mountPath: /var/run
+    emptyDir: {}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  podAnnotations: {}
+  podLabels: {}
+
+# Pre-created docker-registry pull Secret — NAME only (D10). The InnoNet Harbor
+# project is private, so every environment that uses these defaults must create
+# this Secret before Helm runs. The credential value never belongs in this chart.
+imagePullSecrets:
+  - name: dcipm-registry-pull
+
+# -----------------------------------------------------------------------------
+# Secrets: names and keys only, never values (plan decision D10)
+# -----------------------------------------------------------------------------
+# By default this chart creates NO Secret. It references pre-created ones BY NAME
+# (api.dbSecretName / api.authSecretName below), written out of band by
+# `deploy-dcipm.yml` or Rancher -> ddc-pm -> Secrets. Render order is ConfigMap
+# first, then the Secrets, so a Secret key always wins over a ConfigMap key of
+# the same name.
+#
+# `secrets.create` below is the opt-in escape hatch that renders a real Secret
+# object from values. It defaults to false, and false is the right answer here,
+# for a reason that is easy to underestimate:
+#
+#   Helm persists EVERY value of EVERY revision in the release Secret. `helm get
+#   values --revision 3` reproduces a connection string from three upgrades ago --
+#   after `helm uninstall`, and after `helm rollback`. A credential passed with
+#   --set or left in a values file is therefore written into the cluster over and
+#   over, readable by anyone with get-secrets on the namespace, and it survives
+#   every "we removed it" commit. That is risk R13, and it is why the deploy
+#   playbook passes only image.tag on --set.
+#
+# So: prefer the name-reference path. Use `secrets.create` for a first install in
+# a fresh namespace, or for a render that asserts the full object set (that is what
+# scripts/deploy/check-chart-guards.ps1 does with `helm template`).
+secrets:
+  # When false, `templates/secret.yaml` renders nothing and nothing here is read.
+  create: false
+  # Helm has no other way to know that creating a Secret named api.dbSecretName
+  # means taking it over from the playbook. Required alongside `create`; see the
+  # guard in _helpers.tpl and the ownership note in templates/secret.yaml.
+  takeOwnership: false
+  # -> Secret named api.dbSecretName. Keys are configuration keys verbatim, e.g.
+  # ConnectionStrings__Dcipm / ConnectionStrings__DatabaseExplorerReadOnly.
+  # Leave empty: values here are plaintext and belong in a controller env var or
+  # a secret manager, not in a file that gets committed.
+  api: {}
+  # -> Secret named api.authSecretName (e.g. Auth__BootstrapAdmins__0). Rendered
+  # only when non-empty; that Secret stays `optional: true` either way.
+  auth: {}
+
+api:
+  # Every key inside these Secrets IS a config key: Kubernetes permits `__` in
+  # key names and ASP.NET binds `ConnectionStrings__Dcipm` to
+  # `ConnectionStrings:Dcipm`, so no transformation happens anywhere.
+  #
+  # These two names are also the `existingSecret` escape hatch: point them at any
+  # pre-existing Secret and the workloads mount it unchanged, which is exactly
+  # what the deploy playbook relies on. The name is all this chart ever needs.
+  dbSecretName: dcipm-db
+  # Holds Auth__BootstrapAdmins__0. Marked optional in the Deployment: without
+  # it nobody can be granted a role, but the API still boots and serves.
+  authSecretName: dcipm-auth
+
+  replicaCount: 1
+  containerPort: 8080
+  # Kestrel bind addresses. HTTP only, and matched to the container port: TLS
+  # ends at HAProxy/Traefik, so the pod serves plain HTTP (D2/D3). Never add an
+  # https scheme here and never set ASPNETCORE_HTTPS_PORT (risk R12).
+  urls: http://+:8080
+
+  # --- forwarded headers, hop 4 (D9; risks R14/R15) --------------------------
+  # The web pod reaches Kestrel pod-to-pod and that traffic is NOT SNAT'd, so the
+  # trusted peer is the POD CIDR (D12; source of truth
+  # digin-automation/ansible/applications/rancher/vars/rke2.yml -> rke2_cluster_cidr).
+  # ASP.NET Core 8+ silently IGNORES X-Forwarded-* from peers that are not
+  # listed, so a wrong CIDR looks exactly like "the proxies are not forwarding".
+  # Deliberately NOT the node network: egress to MySQL IS SNAT'd, so MySQL trust
+  # is 192.168.250.% — making the two values equal breaks one of them (R10).
+  trustedProxyCidrs:
+    - 10.42.0.0/16
+  # Single addresses instead of a range (node IP, sidecar). Empty by default.
+  trustedProxyIps: []
+
+  # Default log level. Information keeps the startup diagnostics visible
+  # (ConnectionStringGuard and the DocGen font resolver both log at this level,
+  # and they are the two things you reach for when a pod misbehaves).
+  logLevel: Information
+
+  # --- extra env, rendered AFTER the ConfigMap so it wins --------------------
+  # Only secret-referencing or non-secret entries. Never a plaintext credential:
+  #   - name: Some__Token
+  #     valueFrom: { secretKeyRef: { name: dcipm-auth, key: Some__Token } }
+  extraEnv: []
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+  # $APP_UID of mcr.microsoft.com/dotnet/aspnet:9.0 is 1654 (user `app`), which
+  # is what `USER $APP_UID` in the Dockerfile switches to. Pinning the uid lets
+  # the kubelet enforce non-root at admission rather than at runtime.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1654
+    runAsGroup: 1654
+    fsGroup: 1654
+    seccompProfile:
+      type: RuntimeDefault
+  # The API needs no capabilities and no privilege escalation.
+  # `readOnlyRootFilesystem` is deliberately OFF: uploaded assets are written
+  # under /app/wwwroot (MarketingContentAdministrationController.cs:55,
+  # UtilityAssetsController.cs:34) and the base image writes /tmp. Enable it only
+  # together with mounts at those paths.
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+  # Writable scratch for DocGen output (<contentRoot>/data/docgen-output).
+  # Ephemeral by design — generated documents are re-renderable, so this is an
+  # emptyDir and there is no PVC anywhere in this chart.
+  dataVolume:
+    enabled: true
+    mountPath: /app/data
+    emptyDir: {}
+
+  # Probes. The ONLY health endpoints are the two mapped in Program.cs:156-157
+  # (/health/live, /health/ready). There is no /healthz; inventing a path leaves
+  # the pod permanently unready and looks like an application bug.
+  probes:
+    # The startup probe absorbs the cold start (JIT, EF model build, OIDC
+    # metadata fetch, SELECT 1) so the two steady-state probes stay tight and a
+    # genuinely hung pod is still recycled quickly.
+    startup:
+      enabled: true
+      path: /health/live
+      periodSeconds: 3
+      # ~3 min ceiling. /health/ready is deliberately NOT used here: it includes
+      # the mysql DbContext check, so a brief DB outage during a cold start would
+      # restart an otherwise healthy API forever.
+      failureThreshold: 60
+    liveness:
+      enabled: true
+      path: /health/live
+      periodSeconds: 30
+      timeoutSeconds: 3
+      failureThreshold: 3
+    # /health/ready includes the DbContext check (Program.cs:24-25), so a database
+    # blip removes the pod from the Service endpoints — a clean 503 rather than a
+    # misleading 500. Raise failureThreshold if your DB fails over often.
+    readiness:
+      enabled: true
+      path: /health/ready
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+
+  # Never take the only replica down before its replacement is Ready.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  podAnnotations: {}
+  podLabels: {}
+
+service:
+  type: ClusterIP
+  # What nginx's `proxy_pass http://api:8080` talks to; change only together
+  # with a rebuilt nginx config.
+  port: 8080
+  targetPort: 8080
+  annotations: {}
+
+webService:
+  type: ClusterIP
+  port: 80
+  targetPort: 80
+  annotations: {}
+
+# -----------------------------------------------------------------------------
+# Keycloak / OIDC
+# -----------------------------------------------------------------------------
+# READ THIS BEFORE DEBUGGING A SIGN-IN CHANGE (Security/IdentitySettingsProvider.cs).
+# These values are the BOOTSTRAP and the BREAK-GLASS source, not necessarily the
+# EFFECTIVE ones. Auth:Mode=Keycloak with the default IdentitySettingsSource=
+# Database means an active `identity_provider_connections` row overrides this
+# section (IdentitySettingsProvider.cs:56,61-72), and JwtBearer is configured from
+# that snapshot rather than from these keys (AuthenticationSetup.cs:149-162, via
+# provider.Current). So editing Keycloak__BaseUrl here, rolling the pod, and
+# observing no change in behaviour is EXPECTED, not a broken ConfigMap.
+#
+# Two keys are always environment-only regardless of the source:
+# RequireHttpsMetadata and Auth:BootstrapAdmins (IdentitySettingsProvider.cs:13-14).
+# To force this section to win, set identitySettingsSource below to Configuration.
+#
+# The API validates tokens against `issuer` but DOWNLOADS signing keys from the
+# discovery document (or `jwksUrl`). The two addresses may legitimately differ
+# (Security/AuthOptions.cs:101-105; applied at Security/AuthenticationSetup.cs
+# :154-157: "the metadata address may be an internal host … while tokens carry
+# the external issuer, so the issuer is validated explicitly rather than derived
+# from Authority").
+keycloak:
+  # Browser-facing, public, https — the `iss` claim Keycloak actually publishes.
+  baseUrl: https://sso.dinecodetalkers.com
+  realm: innonet
+  # Public client (PKCE, no secret) — a confidential client breaks the SPA
+  # (plan R7), so no secret key exists for this client to reference.
+  clientId: dcipm-web
+  # The `aud` the access token must carry (audience mapper on dcipm-web, D5).
+  audience: dcipm-api
+  # true is MANDATORY in Production (AuthOptions.cs:165-166). Consequence worth
+  # knowing before you set a http override below: JwtBearer then refuses a
+  # non-https discovery address outright — "The MetadataAddress or Authority must
+  # use HTTPS unless disabled for development …" — and the process exits.
+  requireHttpsMetadata: true
+  # Empty = {baseUrl}/realms/{realm}/.well-known/openid-configuration (https).
+  # Set an in-cluster address ONLY with a non-Production environment; the guard
+  # in _helpers.tpl fails the render otherwise.
+  metadataAddress: ""
+  # Optional JWKS override, used instead of the discovery document
+  # (AuthenticationSetup.cs:163-167). Same https rule while the flag is true.
+  jwksUrl: ""
+  # Optional explicit issuer, rendered as Keycloak__Issuer. Empty = the API
+  # derives {BaseUrl}/realms/{Realm} (AuthOptions.cs:85-93), which is what
+  # Keycloak actually writes into the `iss` claim for a standard realm. Set it
+  # only if Keycloak publishes something different (a proxied path, an internal
+  # hostname rewritten on the way out). The value must match the token byte for
+  # byte: the API validates the issuer explicitly instead of deriving it from
+  # Authority, so a near miss fails at token validation, not at boot.
+  issuerOverride: ""
+
+# -----------------------------------------------------------------------------
+# HTTPS-redirect feature gate (plan decision D8, risk R5)
+# -----------------------------------------------------------------------------
+# false, because TLS ends at pfSense HAProxy / Traefik and the container listens
+# on plain HTTP. With the redirect enabled the kubelet's plain-HTTP
+# GET /health/ready — which arrives from the NODE, i.e. outside
+# `api.trustedProxyCidrs` and therefore with no rewritten scheme — is answered
+# with a 307 that kubelet will not follow: the pod never becomes Ready and the
+# rollout CrashLoops. The app default is true (Compose unchanged); the chart
+# turns it off.
+features:
+  useHttpsRedirection: false
+
+# -----------------------------------------------------------------------------
+# CORS — browser-facing origins (plan decision D4)
+# -----------------------------------------------------------------------------
+cors:
+  # Empty = derive `https://<ingress.host>` when an ingress host is configured,
+  # and emit nothing at all otherwise (so a dev render sets no origin). Set
+  # explicitly only for an ADDITIONAL origin. Must be bare origins: scheme +
+  # host + optional port, no path, no trailing slash — the guard fails otherwise.
+  allowedOrigins: []
+
+  # ⚠ WHY THIS EXISTS — read before touching CORS.
+  # ASP.NET Core merges configuration arrays BY INDEX; it does not replace them.
+  # appsettings.json commits two loopback origins, so setting only
+  # Cors__AllowedOrigins__0 leaves `http://localhost:6191` live at index 1 in
+  # Production — a real, reachable CORS allow-list entry that no values file
+  # mentions (verified against a pipeline built from Program.cs:66-72).
+  # The ConfigMap therefore writes an explicit EMPTY value for the
+  # `inheritedOriginCount` indices following the last configured one, which
+  # removes the inherited entries (an empty entry never matches a real Origin
+  # header, and the empty string was confirmed harmless in the policy).
+  #
+  # 2 == the number of entries in appsettings.json's Cors:AllowedOrigins today.
+  # If that file gains entries, raise this; if it drops them, lower it. The API
+  # test suite pins the shipped count, so a drift there fails a test first.
+  inheritedOriginCount: 2
+
+# -----------------------------------------------------------------------------
+# Ingress — RKE2 Traefik behind pfSense HAProxy
+# -----------------------------------------------------------------------------
+# Disabled and hostless in the generic layer, so a dev render or a guard render
+# cannot claim
+# the project's single public DNS name (plan: "One public DNS name exists, and it
+# belongs to Production").
+ingress:
+  enabled: false
+  className: traefik
+  # Set ONLY in values-prod.yaml. Keycloak's redirect_uris, web_origins and
+  # post-logout URIs plus the API CORS allow-list are all pinned to
+  # https://<host> (D4): change one without the others and sign-in breaks. Never
+  # let two releases share one host — Traefik routes public traffic to whichever
+  # was applied last, so a dev release would silently hijack Production.
+  host: ""
+  path: /
+  pathType: Prefix
+  # The API path must stay MORE SPECIFIC than the root path, or nginx/Traefik
+  # would send /api/… to the web Deployment. Longest-prefix wins for Prefix
+  # pathType, but the guard checks it explicitly because the failure is silent.
+  apiPath: /api
+  apiPathType: Prefix
+  # --- TLS terminates OUTSIDE the cluster (D2/D3) ----------------------------
+  # HAProxy holds the certificate and forwards plain HTTP to Traefik with
+  # X-Forwarded-Proto: https, which the forwarded-header chain preserves to
+  # Kestrel. A cluster-side `tls:` block is therefore absent by design: Traefik
+  # would serve a certificate no client validates (the browser's TLS session
+  # ended at HAProxy) and, if its web entrypoint is set to redirect, browser
+  # traffic would 301-loop with HAProxy — the same failure class as risk R12.
+  tls:
+    enabled: false
+    secretName: ""
+    # Empty = [host].
+    hosts: []
+  annotations: {}
+
+# -----------------------------------------------------------------------------
+# Migrations — Helm hook Job (plan decision D15)
+# -----------------------------------------------------------------------------
+# Runs the SAME api image with MIGRATE_ONLY=true; the entrypoint applies pending
+# EF Core migrations and exits without serving HTTP (Program.cs:139-148). This
+# is NOT the Development-only APPLY_MIGRATIONS path, which never runs in
+# Production — the reason a Production schema was previously unapplied.
+migration:
+  enabled: true
+  hookEvents:
+    - pre-install
+    - pre-upgrade
+  hookWeight: "5"
+  # Recreate semantics: the previous Job must be gone before the next is
+  # created, because two concurrent MySQL migrations block on metadata locks.
+  hookDeletePolicy:
+    - hook-succeeded
+    - before-hook-creation
+    - hook-failed
+  activeDeadlineSeconds: 600
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+
+# -----------------------------------------------------------------------------
+# Service account
+# -----------------------------------------------------------------------------
+# Neither workload calls the Kubernetes API, so no RBAC is created and the API
+# token is not even mounted: least privilege by absence.
+serviceAccount:
+  create: true
+  # Empty = <fullname>. Set to use a pre-existing account.
+  name: ""
+  annotations: {}
+  automountServiceAccountToken: false
+
+# -----------------------------------------------------------------------------
+# Reference: config keys the templates emit (contract with the code)
+# -----------------------------------------------------------------------------
+# The three deployment-shape keys below are produced by templates/
+# configmap-api-env.yaml from the values above. Their names are a CONTRACT with
+# apps/api/Dcipm.Api/Program.DeploymentSwitches.cs — the constants there are the
+# only authority. A mistyped key still compiles, still passes every unit test,
+# and is silently ignored at runtime:
+#   Features:UseHttpsRedirection        <- features.useHttpsRedirection
+#   ForwardedHeaders:TrustedProxyCidrs  <- api.trustedProxyCidrs
+#   ForwardedHeaders:TrustedProxyIps    <- api.trustedProxyIps
+# Never emitted, on purpose: ASPNETCORE_HTTPS_PORT (risk R12 — with TLS
+# terminated upstream it produces an infinite redirect loop) and any
+# ConnectionStrings__* (those come from the Secret only).
+#
+# Two things are also deliberately NOT in this chart, so do not add them back:
+#   * an `extraObjects` values key or a Secret template. A values key with no
+#     implementing template is worse than no key, because it reads as supported
+#     (and Helm rejects non-.yaml files under templates/). D10 forbids a Secret
+#     template anyway. Extension point: add a template, then the values key.
+#   * a `helm test` pod. The D8 regression it would assert — the health endpoints
+#     answering 200 over plain HTTP and NOT with a redirect — is asserted by the
+#     API test suite instead (apps/api/Dcipm.Tests, search for /health/ready).
+#
+# CORS index masking: appsettings.json commits Cors:AllowedOrigins with two
+# loopback entries, and ASP.NET Core merges configuration arrays BY INDEX rather
+# than replacing them. Overriding __0 alone therefore leaves the second loopback
+# origin live in Production (verified against the shipped appsettings.json). The
+# ConfigMap template writes an explicit empty value for every inherited index it
+# does not set, which is what removes them.
+

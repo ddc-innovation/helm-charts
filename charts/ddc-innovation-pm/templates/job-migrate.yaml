@@ -1,0 +1,127 @@
+{{- include "dcipm.guardAll" . -}}
+{{- if .Values.migration.enabled -}}
+{{- /*
+Database migrations, as a Helm hook Job (plan decision D15).
+
+WHY A JOB AND NOT STARTUP CODE: migrations previously ran only when
+IsDevelopment() AND APPLY_MIGRATIONS=true (Program.cs:102-106), so a Production
+deployment never migrated anything â€” a fresh or drifted schema was invisible
+until a query failed. This Job uses the new MIGRATE_ONLY early exit
+(Program.cs:139-148): the entrypoint applies pending EF Core migrations and exits
+without serving HTTP, so the same image is both the server and the migrator and
+there is no second artefact to keep in sync.
+
+WHY A HOOK AND NOT AN UPGRADE JOB: a pre-install/pre-upgrade hook blocks the
+release until migrations succeed. An app pod that starts against an unmigrated
+schema fails in ways that look like application bugs; a hook that fails stops the
+release and names the migration that failed.
+
+WHY `hook-failed` IS IN the delete policy: with only `before-hook-creation`, a
+failed Job is deleted before the next attempt, which destroys the pod log that
+explains WHY it failed. The retry still happens; the evidence survives long enough
+to read it.
+
+IT USES THE SAME SECRETS AS THE API, and therefore the same image and the same
+connection string, so "it migrated the database the app will use" is structural
+rather than something an operator has to remember.
+
+MIGRATIONS MUST BE ADDITIVE (see plan Â§Rollback). A destructive migration makes
+`helm rollback` a data-loss operation: the chart rolls back, the schema does not.
+Expand-contract only â€” add columns, backfill, then remove the old ones in a later
+release.
+*/ -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "dcipm.api.fullname" . }}-migrate-{{ .Release.Revision }}
+  namespace: {{ include "dcipm.namespace" . }}
+  labels:
+    {{- include "dcipm.componentLabels" (dict "root" $ "component" "migrate") | nindent 4 }}
+  annotations:
+    helm.sh/hook: {{ join "," .Values.migration.hookEvents }}
+    helm.sh/hook-weight: {{ .Values.migration.hookWeight | quote }}
+    helm.sh/hook-delete-policy: {{ join "," .Values.migration.hookDeletePolicy }}
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  activeDeadlineSeconds: {{ .Values.migration.activeDeadlineSeconds }}
+  backoffLimit: {{ .Values.migration.backoffLimit }}
+  {{- with .Values.migration.ttlSecondsAfterFinished }}
+  ttlSecondsAfterFinished: {{ . }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "dcipm.componentSelectorLabels" (dict "root" $ "component" "migrate") | nindent 8 }}
+    spec:
+      #restartPolicy: Never is mandatory on a Job (the container exits 0 after
+      #migrating; OnFailure would relaunch a completed migrator forever).
+      restartPolicy: Never
+      serviceAccountName: {{ include "dcipm.serviceAccountName" . }}
+      # The migrator needs no control-plane access either.
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          # Same image as the API on purpose (D15): the migration assembly is part
+          # of the application build, so a migration and the code that depends on
+          # it are the same artefact and cannot be deployed apart.
+          image: {{ include "dcipm.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            # Same ConfigMap and the same database Secret as the API, so the
+            # connection string the migrations run against is literally the one
+            # the application will use. No connection strings are set here: they
+            # arrive from the Secret, per D10.
+            - configMapRef:
+                name: {{ include "dcipm.api.fullname" . }}-env
+            - secretRef:
+                name: {{ required "api.dbSecretName is required (name of the pre-created Secret holding ConnectionStrings__Dcipm)" .Values.api.dbSecretName | quote }}
+          env:
+            # The switch itself. Program.cs:139-148 reads it, applies pending
+            # migrations, and returns before the web host starts serving.
+            - name: MIGRATE_ONLY
+              value: "true"
+            {{- with .Values.migration.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.api.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.migration.resources | nindent 12 }}
+          {{- if .Values.api.dataVolume.enabled }}
+          # Migrating can write to the content root (EF design-time artefacts,
+          # DocGen font probing). Same writable mount as the API so a read-only
+          # root is not silently assumed here either.
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.api.dataVolume.mountPath }}
+          {{- end }}
+      {{- if .Values.api.dataVolume.enabled }}
+      volumes:
+        - name: data
+          emptyDir: {{ toJson .Values.api.dataVolume.emptyDir }}
+      {{- end }}
+      {{- with .Values.migration.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.migration.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.migration.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

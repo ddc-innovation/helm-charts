@@ -1,0 +1,14 @@
+# Patterns to ignore when building chart archives. The chart is always used from
+# source (the Ansible playbook and scripts/deploy/helm-deploy.ps1 both point at the
+# directory), so this only keeps `helm package` output clean.
+.git
+.gitignore
+.idea/
+.vscode/
+*.tmproj
+# Never let a locally-rendered overlay carrying credentials be packaged (D10).
+*.local.yaml
+*.creds.yaml
+ci-secrets.yaml
+# Rendered output kept next to the chart for review.
+rendered/

@@ -1,0 +1,34 @@
+{{- include "dcipm.guardAll" . -}}
+{{- /*
+Non-secret API environment (plan Â§5: "non-secret env ONLY").
+
+Two hard rules, both enforced by dcipm.guardAll above rather than by comment:
+  * no ConnectionStrings__* and nothing that looks like a credential â€” those
+    arrive from the pre-created Secrets (D10), which are applied with envFrom
+    AFTER this ConfigMap so a Secret always wins over a key of the same name;
+  * no ASPNETCORE_HTTPS_PORT (R12).
+
+Why a ConfigMap and not env entries in the Deployment: the keys here are the
+deployment-shape contract, and `kubectl -n ddc-pm describe configmap
+ddc-innovation-pm-api-env` shows the whole contract in one place, in the form the
+operator can diff against values.yaml.
+
+Key names are a contract with apps/api/Dcipm.Api/Program.DeploymentSwitches.cs
+and Security/AuthOptions.cs. The constants in those files are the only authority;
+a renamed key here still renders, still deploys, and is silently ignored by the
+runtime. Nothing between here and the runtime catches that, which is why the
+load-bearing ones are asserted by name on the RENDER in
+scripts/deploy/check-chart-guards.ps1 (and again in helm-deploy.ps1) rather than
+left to review.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "dcipm.api.fullname" . }}-env
+  namespace: {{ include "dcipm.namespace" . }}
+  labels:
+    {{- include "dcipm.componentLabels" (dict "root" $ "component" "api") | nindent 4 }}
+data:
+  {{- range $key, $value := (fromYaml (include "dcipm.api.env" .)) }}
+  {{ $key }}: {{ $value | toString | quote }}
+  {{- end }}

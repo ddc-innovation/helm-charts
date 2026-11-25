@@ -1,0 +1,80 @@
+﻿{{- include "dcipm.guardAll" . -}}
+{{- if .Values.ingress.enabled -}}
+{{- /*
+Ingress â€” Traefik (RKE2), behind pfSense HAProxy.
+
+  * Rendered ONLY when ingress.enabled, and the host comes from the production
+    overlay alone. This project publishes exactly one DNS name; a second release
+    claiming it makes Traefik route the public URL to whichever release was
+    applied last, so a dev release would hijack production traffic behind a URL
+    that looks entirely legitimate. That is why the base layer ships this
+    disabled and hostless rather than defaulting to something "convenient".
+
+  * NO `tls:` BLOCK, by design (D2/D3). TLS terminates at pfSense HAProxy, which
+    forwards plain HTTP to Traefik with X-Forwarded-Proto: https. The chain that
+    preserves the browser scheme is: HAProxy -> Traefik -> nginx (which passes the
+    header through rather than overwriting it with its own $scheme) -> Kestrel
+    (which trusts it because api.trustedProxyCidrs lists the pod CIDR).
+    A cluster-side certificate would be served to nobody: the browser's TLS
+    session ended at HAProxy. And if Traefik's web entrypoint is configured to
+    redirect, browser traffic 301-loops with HAProxy â€” the same failure class as
+    risk R12. Enable `tls` only if you deliberately move TLS into the cluster,
+    and re-test the redirect path when you do.
+
+  * The /api rule MUST be more specific than the root rule (checked by the guard):
+    two identical Prefix rules would give Traefik one match for two backends.
+
+  * No annotations that assume a specific Traefik middleware (stripping,
+    rate-limiting, redirect-to-https). The last one in particular would defeat
+    the whole plain-HTTP design above.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "dcipm.fullname" . }}
+  namespace: {{ include "dcipm.namespace" . }}
+  labels:
+    {{- include "dcipm.componentLabels" (dict "root" $ "component" "ingress") | nindent 4 }}
+  {{- with (merge (default dict .Values.ingress.annotations) (dict "nginx.ingress.kubernetes.io/proxy-body-size" "50m")) }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          # More specific first. Order is not what makes this work (longest
+          # prefix wins), but it is what makes the file readable.
+          - path: {{ .Values.ingress.apiPath }}
+            pathType: {{ .Values.ingress.apiPathType }}
+            backend:
+              service:
+                # The API is reached through its Service by a documented name;
+                # see service-api.yaml (risk R6).
+                name: {{ include "dcipm.api.serviceName" . }}
+                port:
+                  number: {{ .Values.service.port }}
+          - path: {{ .Values.ingress.path }}
+            pathType: {{ .Values.ingress.pathType }}
+            backend:
+              service:
+                name: {{ include "dcipm.web.serviceName" . }}
+                port:
+                  number: {{ .Values.webService.port }}
+  {{- with .Values.ingress.tls }}
+  {{- if .enabled }}
+  # Only reachable if you deliberately move TLS in-cluster. See the comment at the
+  # top of this file before enabling it.
+  tls:
+    - secretName: {{ required "ingress.tls.secretName is required when ingress.tls.enabled is true" .secretName | quote }}
+      hosts:
+        {{- range (default (list $.Values.ingress.host) .hosts) }}
+        - {{ . | quote }}
+        {{- end }}
+  {{- end }}
+  {{- end }}
+{{- end }}

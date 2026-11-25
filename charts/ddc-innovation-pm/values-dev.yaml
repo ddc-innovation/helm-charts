@@ -1,0 +1,83 @@
+# =============================================================================
+# ddc-innovation-pm — DEVELOPMENT overlay (layer 3 of 3, plan §5)
+# =============================================================================
+#   helm template    ddc-innovation-pm . -n ddc-pm-dev \
+#       -f values.yaml -f values-dev.yaml --set image.tag=<tag>
+#   helm upgrade --install ddc-innovation-pm . -n ddc-pm-dev \
+#       -f values.yaml -f values-dev.yaml --set image.tag=<tag> --create-namespace
+#
+# <tag> is the value given to scripts/deploy/build-push-images.ps1 -Tag, not a git
+# rev-parse (see scripts/deploy/README.md, "Where the image tag comes from").
+#
+# A dev render contains NO Ingress object at all and NO hostname of any kind.
+# Reach it with `kubectl -n ddc-pm-dev port-forward svc/web 8080:80` instead of a
+# URL. This is deliberate, not laziness: the project has exactly one public DNS
+# name and it belongs to Production (see values-prod.yaml). A dev release that
+# claimed it would take Production traffic.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# ⚠ THIS OVERLAY CHANGES THE NAMESPACE, AND IT HAS TO
+# -----------------------------------------------------------------------------
+# The API Service name is pinned to the literal `api` because nginx inside the
+# web image proxies to `http://api:8080` by name (risk R6). A dev release
+# therefore CANNOT live in `ddc-pm`: it would fail with `services "api" already
+# exists` — or, worse, if it somehow adopted that Service, it would retarget the
+# production web pod's /api/ traffic at the dev API. `ddc-pm-dev` avoids both.
+#
+# Prerequisite to actually RUN this overlay (rendering needs nothing): namespace
+# ddc-pm-dev plus its own copies of the Secrets, because Secrets are namespaced:
+#   dcipm-registry-pull, dcipm-db, dcipm-auth   (same names, this namespace)
+namespace: ddc-pm-dev
+
+# Dev-shaped non-secret env. Header-based auth keeps the guard out of the
+# picture, so no Keycloak round-trip and no certificate requirements.
+aspnetcoreEnvironment: Development
+authMode: Development
+
+ingress:
+  enabled: false
+
+# No host → no derived origin → the dev ConfigMap sets no Cors__AllowedOrigins__*.
+# The web tier proxies /api/ to the `api` Service, so the SPA and the API share
+# one origin and CORS is not exercised; add an origin here only if you browse the
+# UI from somewhere else.
+cors:
+  allowedOrigins: []
+
+# --- Keycloak: the dev half of the issuer/discovery split -------------------
+# Inert under Auth__Mode=Development (the API authenticates from headers and never
+# reads these keys). They become live the moment you render this overlay with
+# `--set authMode=Hybrid`, which is the supported way to test real tokens without
+# Production: outside Production the guard stops forcing RequireHttpsMetadata, so
+# the API may fetch its discovery document from inside the firewall instead of
+# hairpinning through the public URL.
+#
+# That is exactly the combination Production cannot use: the issuer stays the
+# PUBLIC https URL (it is the `iss` claim in the token and is validated
+# explicitly, so it must match what Keycloak put there), while the address the
+# pod dials is internal. In Production the guard forces
+# Keycloak:RequireHttpsMetadata=true and JwtBearer then rejects a non-https
+# discovery address — the render guard in _helpers.tpl enforces that rule here too.
+keycloak:
+  requireHttpsMetadata: false
+  # Replace with the address your pods can actually resolve.
+  metadataAddress: http://keycloak.digin.svc.cluster.local:8080/realms/innonet/.well-known/openid-configuration
+  jwksUrl: ""
+
+# Still off in dev: the container listens on plain HTTP here too, so an enabled
+# redirect breaks the kubelet probe the same way it does in Production.
+features:
+  useHttpsRedirection: false
+
+# Smaller footprint for a namespace nobody load-tests.
+api:
+  replicaCount: 1
+
+web:
+  replicaCount: 1
+
+# Keep the hook Job enabled: it is the only way a dev release exercises the
+# migration path that Production depends on.
+migration:
+  enabled: true

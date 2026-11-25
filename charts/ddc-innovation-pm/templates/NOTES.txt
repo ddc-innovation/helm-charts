@@ -1,0 +1,96 @@
+{{- include "dcipm.guardAll" . -}}
+{{- /*
+Operator-facing summary, printed by `helm install`/`helm upgrade`.
+
+ASCII only on purpose: this text is written straight to a terminal, and a
+non-ASCII dash prints as mojibake on a cp437 console — which makes the message
+that explains a production incident unreadable in exactly the moment it matters.
+*/ -}}
+Release {{ .Release.Name }}  |  namespace {{ include "dcipm.namespace" . }}  |  env={{ .Values.aspnetcoreEnvironment }}  auth={{ .Values.authMode }}  migrations={{ ternary "pre-hook Job" "DISABLED (schema will not change)" .Values.migration.enabled }}
+
+Workloads
+  api   {{ include "dcipm.image" . }}
+        Service {{ include "dcipm.api.serviceName" . }}:{{ .Values.service.port }}  {{ .Values.api.replicaCount }} replica(s)
+  web   {{ include "dcipm.web.image" . }}
+        Service {{ include "dcipm.web.serviceName" . }}:{{ .Values.webService.port }}  {{ .Values.web.replicaCount }} replica(s)
+{{- if gt (int .Values.api.replicaCount) 1 }}
+
+  NOTE: the API has {{ .Values.api.replicaCount }} replicas. Its hosted background
+  workers (AutomationSchedulerService, ScreenAuditRetentionService) have no
+  leader election, so every scheduled job now runs on EVERY replica - duplicated
+  automations, and the audit-retention job deleting data more than once. Set
+  api.replicaCount back to 1, or add leader guarding first.
+{{- end }}
+
+{{ if .Values.ingress.enabled -}}
+Reach it at  https://{{ .Values.ingress.host }}
+
+  TLS ends at pfSense HAProxy. The cluster serves plain HTTP and
+  X-Forwarded-Proto carries the browser's scheme to Kestrel. Do not add a
+  `tls:` block to this Ingress or set ASPNETCORE_HTTPS_PORT: both create
+  redirect loops that look like application bugs (D2/D3, R12).
+
+  Keycloak client must register this exact origin:
+    Valid redirect URIs              https://{{ .Values.ingress.host }}/*
+    Web origins                      https://{{ .Values.ingress.host }}
+    Post-logout redirect URIs        https://{{ .Values.ingress.host }}
+
+  API CORS is derived from this host (Cors__AllowedOrigins__0 =
+  https://{{ .Values.ingress.host }}), so the Ingress and the allow-list
+  cannot disagree.
+{{- else -}}
+No Ingress is rendered for this release, deliberately. This project publishes
+exactly ONE DNS name and it belongs to Production, so a non-production release
+owns no hostname - two releases claiming it makes Traefik serve the public URL
+from whichever was applied last. Reach this release with:
+
+  kubectl -n {{ include "dcipm.namespace" . }} port-forward svc/{{ include "dcipm.web.serviceName" . }} 8080:80
+  # then browse http://localhost:8080   (nginx proxies /api/ to the `api` Service)
+{{- end }}
+
+Secrets - referenced by name, never contained in this chart (D10)
+{{- range .Values.imagePullSecrets }}
+  {{ .name }}
+    docker registry credentials, pre-created in this namespace
+{{- end }}
+  {{ .Values.api.dbSecretName }}
+    must contain ConnectionStrings__Dcipm and ConnectionStrings__DatabaseExplorerReadOnly
+  {{ .Values.api.authSecretName }} (optional)
+    Auth__BootstrapAdmins__0 grants the first application admin
+
+These are namespace-scoped, so a new namespace needs its own copies. If
+{{ .Values.api.dbSecretName }} is missing the API exits at startup naming the key;
+that message is the guard working, not a bug. No Secret object is created by
+this chart and no credential value appears in `helm get values` or in any
+rendered manifest.
+
+Verify after deploy
+  kubectl -n {{ include "dcipm.namespace" . }} rollout status deploy/{{ include "dcipm.api.fullname" . }}
+  kubectl -n {{ include "dcipm.namespace" . }} exec deploy/{{ include "dcipm.api.fullname" . }} -- wget -qO- http://localhost:{{ .Values.api.containerPort }}/health/ready
+
+  Health must answer plain HTTP 200, never a 307. A 307 means
+  Features__UseHttpsRedirection came out true: the pod CrashLoops, because the
+  kubelet probes over plain HTTP and does not follow the redirect (R5). Check
+  with `kubectl -n {{ include "dcipm.namespace" . }} describe configmap {{ include "dcipm.api.fullname" . }}-env`.
+{{- if not .Values.api.trustedProxyCidrs }}
+
+  WARNING: api.trustedProxyCidrs is empty. ASP.NET Core 8+ IGNORES
+  X-Forwarded-For and X-Forwarded-Proto from peers that are not explicitly
+  trusted, so the API will see every request as plain HTTP from an unknown
+  proxy: CORS, redirects and audit source IPs are all wrong while every
+  component reports itself healthy (R15). Normally the pod CIDR, 10.42.0.0/16.
+{{- end }}
+{{- if .Values.ingress.tls.enabled }}
+
+  NOTE: ingress.tls.enabled is true. That is only correct if TLS has been moved
+  INTO the cluster deliberately. With HAProxy still terminating TLS in front of
+  Traefik, Traefik serves a certificate no client validates and any redirect at
+  that edge loops with HAProxy (R12). Re-test the full browser path.
+{{- end }}
+{{- if not .Values.migration.enabled }}
+
+  WARNING: migration.enabled is false, so nothing in this release applies EF Core
+  migrations. A fresh or drifted database will fail at query time, hours from
+  now, looking like an application defect. Enable it, or apply migrations out of
+  band and record where.
+{{- end }}

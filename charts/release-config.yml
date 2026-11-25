@@ -12,3 +12,9 @@ charts:
     bump: patch
     set:
       image.digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  ddc-innovation-pm:
+    path: charts/ddc-innovation-pm
+    namespace: ddc-pm
+    bump: patch
+    set:
+      image.tag: abcdef0

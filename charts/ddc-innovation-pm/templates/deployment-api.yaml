@@ -1,0 +1,181 @@
+﻿{{- include "dcipm.guardAll" . -}}
+{{- /*
+API Deployment (.NET 9 / Kestrel).
+
+WHAT IS DELIBERATELY ABSENT, AND WHY â€” each of these is a failure mode that
+looks like an application bug, so the reasoning is recorded here rather than in a
+commit message:
+
+  * No HTTPS endpoint and no ASPNETCORE_HTTPS_PORT. TLS terminates at pfSense
+    HAProxy in front of Traefik (D2/D3); the pod serves plain HTTP. Adding the
+    port variable makes Kestrel issue 307s to a port nothing listens on, and with
+    HAProxy in front that is an infinite redirect loop (R12).
+
+  * No `tls:` on the Ingress (see ingress.yaml) â€” same reason.
+
+  * readOnlyRootFilesystem is NOT set. The application writes uploaded assets
+    under /app/wwwroot (MarketingContentAdministrationController.cs:55,
+    UtilityAssetsController.cs:34) and the base image writes under /tmp. Turning
+    it on without mounts at both paths produces write failures at runtime, not a
+    validation error at deploy time.
+
+  * No Service monitor annotations / no PodMonitor: out of scope for this task.
+
+  * Only the two health endpoints the application maps (Program.cs:156-157).
+
+REPLICA COUNT: the default is 1 and it is not a resource decision.
+AutomationSchedulerService and ScreenAuditRetentionService are hosted background
+workers with no leader election, so a second replica runs every scheduled job
+twice â€” duplicated automations and a doubly-deleted audit trail. Scale only
+together with leader guarding.
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dcipm.api.fullname" . }}
+  namespace: {{ include "dcipm.namespace" . }}
+  labels:
+    {{- include "dcipm.componentLabels" (dict "root" $ "component" "api") | nindent 4 }}
+  {{- with (include "dcipm.annotations" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.api.replicaCount }}
+  revisionHistoryLimit: {{ .Values.api.revisionHistoryLimit | default 5 }}
+  strategy:
+    {{- toYaml .Values.api.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "dcipm.componentSelectorLabels" (dict "root" $ "component" "api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "dcipm.componentLabels" (dict "root" $ "component" "api") | nindent 8 }}
+        {{- with .Values.api.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # Roll the pods when the environment changes. Without this, `helm
+        # upgrade` that changes only the ConfigMap updates the ConfigMap object
+        # and leaves every pod running the OLD environment â€” which is exactly the
+        # failure that makes a config fix "not take".
+        checksum/config: {{ include "dcipm.api.env" . | sha256sum }}
+        {{- with .Values.api.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "dcipm.serviceAccountName" . }}
+      # Neither workload calls the Kubernetes API, so the API token is not
+      # mounted at all: least privilege by absence, and no path for a compromised
+      # pod to talk to the control plane.
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.api.podSecurityContext | nindent 8 }}
+      containers:
+        - name: api
+          image: {{ include "dcipm.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Mirrors api.containerPort; ASPNETCORE_URLS in the ConfigMap binds the
+          # same number, so the probe port, the Service targetPort and the
+          # listener cannot drift apart silently.
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.containerPort }}
+              protocol: TCP
+          envFrom:
+            # Order is load-bearing: ConfigMap first, then the Secrets, so a
+            # Secret key always wins over a ConfigMap key of the same name
+            # (Kubernetes applies envFrom entries in list order).
+            - configMapRef:
+                name: {{ include "dcipm.api.fullname" . }}-env
+            - secretRef:
+                name: {{ required "api.dbSecretName is required (name of the pre-created Secret holding ConnectionStrings__Dcipm)" .Values.api.dbSecretName | quote }}
+            - secretRef:
+                # Optional: without it nobody can be granted a role, but the API
+                # still boots and serves. Losing it must not block a deploy.
+                name: {{ .Values.api.authSecretName | quote }}
+                optional: true
+          {{- with .Values.api.extraEnv }}
+          # Rendered after envFrom, so an explicit entry overrides a ConfigMap key.
+          # No plaintext credentials here â€” use valueFrom.secretKeyRef (D10).
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if .Values.api.probes.startup.enabled }}
+          # Absorbs the cold start (JIT, EF model build, the OIDC metadata
+          # fetch, the first SELECT 1) so liveness and readiness can stay tight
+          # and a genuinely hung pod is still recycled quickly.
+          # /health/live rather than /health/ready on purpose: readiness includes
+          # the mysql check, so a database blip during a cold start would restart
+          # an otherwise healthy API forever.
+          startupProbe:
+            httpGet:
+              path: {{ .Values.api.probes.startup.path }}
+              port: http
+            periodSeconds: {{ .Values.api.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.api.probes.startup.failureThreshold }}
+          {{- end }}
+          {{- if .Values.api.probes.liveness.enabled }}
+          # Plain HTTP. If the app ever starts redirecting, this probe gets a 307,
+          # the pod is killed, and the CrashLoop names the real cause (R5).
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.api.probes.liveness.path }}
+              port: http
+            periodSeconds: {{ .Values.api.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.api.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.api.probes.liveness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.api.probes.readiness.enabled }}
+          # /health/ready includes the DbContext check (Program.cs:24-25), so a
+          # database outage pulls the pod out of the Service endpoints. Intended:
+          # a clean 503 from the proxy beats a misleading 500 from the app. Raise
+          # failureThreshold if the database fails over often and you would rather
+          # keep serving through it.
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.api.probes.readiness.path }}
+              port: http
+            periodSeconds: {{ .Values.api.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.api.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.api.probes.readiness.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.api.securityContext | nindent 12 }}
+          {{- if .Values.api.dataVolume.enabled }}
+          # Writable scratch for generated documents (DocGen writes under
+          # <contentRoot>/data). Ephemeral by design: every artefact is
+          # re-renderable from its manual, so there is no PVC in this chart and
+          # nothing to back up.
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.api.dataVolume.mountPath }}
+          {{- end }}
+      {{- if .Values.api.dataVolume.enabled }}
+      volumes:
+        - name: data
+          emptyDir: {{ toJson .Values.api.dataVolume.emptyDir }}
+      {{- end }}
+      {{- with .Values.api.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

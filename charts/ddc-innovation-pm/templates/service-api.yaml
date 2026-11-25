@@ -1,0 +1,33 @@
+﻿{{- include "dcipm.guardAll" . -}}
+{{- /*
+API Service â€” MUST be named `api` on port 8080.
+
+The name is not a convention inside this chart. nginx inside the web image
+contains `proxy_pass http://api:8080` (nginx/nginx.conf, `location /api/`), so
+the name and the port are read by an artefact built elsewhere. Rename this
+Service and the deploy succeeds while every API call in the browser starts
+returning 502 â€” with the API pods themselves looking perfectly healthy. Risk R6.
+
+ClusterIP only: nothing outside the cluster talks to this port directly. Browsers
+reach it through the Ingress via the web tier's /api/ proxy.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "dcipm.api.serviceName" . }}
+  namespace: {{ include "dcipm.namespace" . }}
+  labels:
+    {{- include "dcipm.componentLabels" (dict "root" $ "component" "api") | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}
+      protocol: TCP
+  selector:
+    {{- include "dcipm.componentSelectorLabels" (dict "root" $ "component" "api") | nindent 4 }}

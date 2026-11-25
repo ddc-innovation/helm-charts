@@ -1,0 +1,72 @@
+# =============================================================================
+# ddc-innovation-pm — PRODUCTION overlay (layer 2 of 3, plan §5)
+# =============================================================================
+# Deployed by scripts/deploy/helm-deploy.ps1, which assembles exactly this:
+#   helm upgrade --install ddc-innovation-pm . -n ddc-pm \
+#       -f values.yaml -f values-prod.yaml --set image.tag=<tag> --wait
+#
+# The tag comes from the build script, NOT from git:
+#   .\scripts\deploy\build-push-images.ps1 -Tag <tag>     # it prints the helm command
+# Pass the tag you actually built. It is never derived from `git rev-parse HEAD`
+# here, because in this workspace copy git cannot be trusted to describe the tree
+# (see scripts/deploy/README.md, "Where the image tag comes from").
+#
+# THE ONE PUBLIC HOST LIVES HERE AND NOWHERE ELSE.
+# `ddc-innovation-pm.dinecodetalkers.com` is the only DNS name published for this
+# project. HAProxy/DNS provisions exactly one, and Keycloak's redirect_uris,
+# web_origins and post-logout URIs plus the API's CORS allow-list are all pinned
+# to it (D4). Two consequences:
+#   1. A second release claiming this host makes Traefik route the public URL to
+#      whichever pod was applied last — a dev release would silently hijack
+#      production traffic behind a URL that looks completely legitimate.
+#   2. A "dev" hostname is not a shortcut: it would need its own DNS record, its
+#      own HAProxy frontend and its own Keycloak origins. That is a separate,
+#      larger decision, not a values edit.
+#
+# MUST NEVER CONTAIN: an image tag (it is passed on --set by helm-deploy.ps1, so
+# that a deploy can retarget a build without editing a file) or any credential
+# value (D10). Check with:
+#   git grep -l 'ddc-innovation-pm\.dinecodetalkers\.com' -- '*/helm/ddc-innovation-pm'
+# → this file only. (`values.yaml` legitimately contains the shared Keycloak host
+# `sso.dinecodetalkers.com`, a different host owned by Keycloak.)
+# =============================================================================
+
+# Plan decision D6. `ddc-pme` (one character away) hosts the live DDC-PME app.
+namespace: ddc-pm
+
+# Production refuses to start with anything but Keycloak (AuthOptions.cs:152-157);
+# _helpers.tpl fails the render on a mismatch so it is a readable error and not a
+# CrashLoopBackOff (risk R9).
+aspnetcoreEnvironment: Production
+authMode: Keycloak
+
+# The only environment that reaches Traefik from outside.
+ingress:
+  enabled: true
+  host: ddc-innovation-pm.dinecodetalkers.com
+
+# CORS is derived from ingress.host → https://ddc-innovation-pm.dinecodetalkers.com
+# (D4: browser-facing = https; the cluster serving plain HTTP is irrelevant here,
+# because the SPA builds its redirect_uri from window.location.origin).
+cors:
+  allowedOrigins: []
+
+# Keycloak's public URL is also the discovery address in Production: the guard
+# forces RequireHttpsMetadata=true, and JwtBearer rejects a non-https discovery
+# address under that flag. The in-cluster http alternative therefore only exists
+# for non-Production renders — see values-dev.yaml and README "Keycloak".
+keycloak:
+  metadataAddress: ""
+  jwksUrl: ""
+
+# The Harbor project is private. Keep the Secret name explicit in the production
+# overlay so a review of this file alone shows the pull dependency. The Secret is
+# created by digin-automation and contains a project-scoped, pull-only robot
+# credential; no credential value is stored here.
+imagePullSecrets:
+  - name: dcipm-registry-pull
+
+# D8 / R5: never redirect at the app when TLS ends at HAProxy — the kubelet's
+# plain-HTTP readiness probe would get a 307 it does not follow.
+features:
+  useHttpsRedirection: false
