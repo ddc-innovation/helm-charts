@@ -3,6 +3,9 @@
 DDC Innovation Portfolio Management (DCIPM): a .NET 9 API and a React/nginx web
 tier on RKE2 v1.36.4 behind Traefik, with TLS terminated at pfSense HAProxy.
 
+For a self-contained Rancher deployment context that can be embedded in a
+larger AI request, see [README-AI-PROMPT.md](README-AI-PROMPT.md).
+
 The chart lives **in this application repository**, not in `digin-automation`, so a
 chart change and the code it deploys land in one commit and one review (plan
 decision D7). The Ansible playbooks that prepare the cluster and database stay in
