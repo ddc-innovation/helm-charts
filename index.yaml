@@ -3,7 +3,7 @@ entries:
   bdv:
   - apiVersion: v2
     appVersion: "372"
-    created: "2026-11-19T01:38:59.207942755Z"
+    created: "2026-11-25T16:13:47.273891665Z"
     description: BDV runtime and recoverable remote MySQL provisioning, with deployment
       evidence gates
     digest: 2517c0e1034c9a08d8d00de278531f6406487f8df0cf855f32188fd083153121
@@ -14,7 +14,7 @@ entries:
     version: 0.3.0
   - apiVersion: v2
     appVersion: "372"
-    created: "2026-11-19T01:38:59.204600836Z"
+    created: "2026-11-25T16:13:47.270113686Z"
     description: BDV runtime and recoverable remote MySQL provisioning, with deployment
       evidence gates
     digest: adfe63a7c2f16a1cf06203ace2b476326379ae798effe86a8afc66be408d6bba
@@ -25,7 +25,7 @@ entries:
     version: 0.2.0
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-11-19T01:38:59.201570523Z"
+    created: "2026-11-25T16:13:47.266904349Z"
     dependencies:
     - condition: minio.enabled
       name: minio
@@ -62,10 +62,47 @@ entries:
     urls:
     - https://ddc-innovation.github.io/helm-charts/bdv-0.1.0.tgz
     version: 0.1.0
+  ddc-innovation-pm:
+  - annotations:
+      artifacthub.io/operator: "false"
+    apiVersion: v2
+    appVersion: 1.0.0
+    created: "2026-11-25T16:13:47.275667812Z"
+    description: 'DDC Innovation Portfolio Management (DCIPM) — a .NET 9 API and a
+      React/nginx web tier, deployed behind pfSense HAProxy and RKE2 Traefik.  TLS
+      terminates OUTSIDE the cluster, so both workloads serve plain HTTP and the browser-facing
+      scheme is carried by X-Forwarded-Proto. That single fact drives most of the
+      chart''s shape: the HTTPS-redirect gate is off, the trusted-proxy CIDR is the
+      pod network, and there is no `tls:` block. Read values.yaml before changing
+      any of those three, and run scripts/deploy/check-chart-guards.ps1 after (it
+      fails the render on purpose for each of those mistakes).  Secrets are referenced
+      by NAME, not defined here (decision D10): the default render contains no Secret
+      object and no credential value appears in a values file, in a rendered manifest,
+      or in `helm get values`. `secrets.create` is the opt-in escape hatch for a fresh
+      namespace, and it requires an explicit `secrets.takeOwnership` because creating
+      the Secret hands it to Helm. '
+    digest: 720e0873d37407aeca472e9636e2da39e941d59576c1fbaf3f542d60523b5720
+    home: https://github.com/ddc-innovation/ddc_innovation_portfollio_management
+    keywords:
+    - dcipm
+    - ddc-innovation-pm
+    - dotnet
+    - react
+    kubeVersion: '>=1.28.0-0'
+    maintainers:
+    - email: richard.stevens@ddc-dine.com
+      name: Richard Stevens
+    name: ddc-innovation-pm
+    sources:
+    - https://github.com/ddc-innovation/ddc_innovation_portfollio_management
+    type: application
+    urls:
+    - https://ddc-innovation.github.io/helm-charts/ddc-innovation-pm-0.1.0.tgz
+    version: 0.1.0
   postfix-relay:
   - apiVersion: v2
     appVersion: 3.12-20260831-nonprod-unprivileged
-    created: "2026-11-19T01:38:59.20910854Z"
+    created: "2026-11-25T16:13:47.276013353Z"
     description: Non-root Postfix application alert relay for Exchange Online
     digest: 03bcd5a91dedde47ad09b1a7e9425ed9bdfd434d9c5151295fac5578d20de2e8
     name: postfix-relay
@@ -73,4 +110,4 @@ entries:
     urls:
     - https://ddc-innovation.github.io/helm-charts/postfix-relay-0.1.0.tgz
     version: 0.1.0
-generated: "2026-11-19T01:38:59.19732053Z"
+generated: "2026-11-25T16:13:47.261460667Z"
