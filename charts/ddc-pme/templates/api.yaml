@@ -1,0 +1,105 @@
+{{- /*
+API: NestJS HTTP server (`node dist/main.js`, port 8000).
+The Service is ClusterIP and is deliberately NOT referenced by any Ingress /
+IngressRoute: browsers reach /api/v1 through the nginx component, which proxies
+to this Service. Never route the ingress straight at the API.
+*/ -}}
+{{- $name := include "ddc-pme.componentName" (dict "root" . "component" "api") }}
+{{- $image := dict "root" . "image" .Values.api.image "component" "api" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ddc-pme.componentLabels" (dict "root" . "component" "api") | nindent 4 }}
+spec:
+  {{- /* With an HPA the autoscaler owns the replica count. */}}
+  {{- if not .Values.autoscaling.api.enabled }}
+  replicas: {{ .Values.api.replicas }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "ddc-pme.componentSelectorLabels" (dict "root" . "component" "api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ddc-pme.componentLabels" (dict "root" . "component" "api") | nindent 8 }}
+      annotations:
+        # Roll the Pods when the non-secret config changes.
+        checksum/config: {{ include (print $.Template.BasePath "/backend-configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "ddc-pme.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      terminationGracePeriodSeconds: {{ .Values.api.terminationGracePeriodSeconds }}
+      {{- include "ddc-pme.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext.backend | nindent 8 }}
+      {{- include "ddc-pme.backendScheduling" (dict "root" . "component" "api") | nindent 6 }}
+      containers:
+        - name: api
+          image: {{ include "ddc-pme.image" $image | quote }}
+          imagePullPolicy: {{ include "ddc-pme.pullPolicy" (dict "root" . "image" .Values.api.image) }}
+          command: ["node", "dist/main.js"]
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext.backend | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.containerPort }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "ddc-pme.configName" . }}
+          # ORDER MATTERS: the secretKeyRef entries (DB_*, REDIS_PASSWORD, ...)
+          # come before DATABASE_URL / REDIS_URL, which expand them with $(VAR).
+          env:
+            {{- include "ddc-pme.backendSecretEnv" . | nindent 12 }}
+            - name: PORT
+              value: {{ .Values.api.containerPort | int64 | quote }}
+            - name: DATABASE_POOL_MAX
+              value: {{ .Values.api.databasePoolMax | int64 | quote }}
+            - name: DATABASE_POOL_MIN
+              value: {{ .Values.api.databasePoolMin | int64 | quote }}
+            - name: DATABASE_STATEMENT_TIMEOUT_MS
+              value: {{ .Values.api.databaseStatementTimeoutMs | int64 | quote }}
+            {{- include "ddc-pme.extraEnv" .Values.app.extraEnv | nindent 12 }}
+            {{- include "ddc-pme.extraEnv" .Values.api.extraEnv | nindent 12 }}
+          startupProbe:
+            {{- toYaml .Values.probes.api.startup | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.probes.api.liveness | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.probes.api.readiness | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources.api | nindent 12 }}
+          volumeMounts:
+            # Root filesystem is read-only; Node and multipart uploads need /tmp.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.api.tmpSizeLimit }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ddc-pme.componentLabels" (dict "root" . "component" "api") | nindent 4 }}
+spec:
+  type: {{ include "ddc-pme.serviceType" (dict "component" "api" "type" .Values.api.service.type) }}
+  selector:
+    {{- include "ddc-pme.componentSelectorLabels" (dict "root" . "component" "api") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.api.service.port }}
+      targetPort: http
+      protocol: TCP

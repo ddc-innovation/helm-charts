@@ -1,0 +1,17 @@
+apiVersion: v2
+name: ddc-pme
+description: >-
+  DDC PME (Project Management Engine): nginx-served React SPA, NestJS API and
+  worker, Redis and an optional MinIO, wired to a REMOTE Percona MySQL and an
+  external Keycloak. All credentials come from pre-existing Secrets created in
+  Rancher; this chart never creates a Secret.
+type: application
+# Chart version (bump on any chart change). Image versions are NOT tied to this:
+# they come from global.imageTag at install time.
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.25.0-0"
+keywords:
+  - ddc-pme
+  - pme
+home: https://ddc-pme.dinecodetalkers.com

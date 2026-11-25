@@ -1,0 +1,65 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- /*
+Pods allowed to reach Redis / MinIO. They are matched by the chart's own
+selector labels (same release) plus the component label, so another release or
+namespace cannot connect. Requires a CNI that enforces NetworkPolicy.
+*/ -}}
+{{- if .Values.redis.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ddc-pme.componentName" (dict "root" . "component" "redis") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ddc-pme.componentLabels" (dict "root" . "component" "redis") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ddc-pme.componentSelectorLabels" (dict "root" . "component" "redis") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "ddc-pme.selectorLabels" . | nindent 14 }}
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [api, worker]
+      ports:
+        - protocol: TCP
+          port: 6379
+{{- end }}
+{{- if .Values.minio.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ddc-pme.componentName" (dict "root" . "component" "minio") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ddc-pme.componentLabels" (dict "root" . "component" "minio") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ddc-pme.componentSelectorLabels" (dict "root" . "component" "minio") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # S3 API only. The console port (9001) is not opened to any Pod; use
+    # `kubectl port-forward` when minio.consoleEnabled=true.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "ddc-pme.selectorLabels" . | nindent 14 }}
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [api, worker, minio-init]
+      ports:
+        - protocol: TCP
+          port: 9000
+{{- end }}
+{{- end }}

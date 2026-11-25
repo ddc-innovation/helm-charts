@@ -1,0 +1,66 @@
+{{- if .Values.migrate.enabled }}
+{{- /*
+One-off Prisma migration. NOT a Helm hook (no helm.sh/hook annotations): the
+schema of the shared remote database changes only when an operator turns
+migrate.enabled on, after a backup. The Job name includes a hash of the image
+and command so a new tag creates a NEW Job instead of failing on an immutable
+pod template. Only DATABASE_URL is needed; no Redis, S3 or OIDC settings.
+*/ -}}
+{{- $image := include "ddc-pme.image" (dict "root" . "image" .Values.migrate.image "component" "migrate") }}
+{{- $hash := printf "%s|%s" $image (toJson .Values.migrate.command) | sha256sum | trunc 8 }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-%s" (include "ddc-pme.componentName" (dict "root" . "component" "migrate")) $hash }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ddc-pme.componentLabels" (dict "root" . "component" "migrate") | nindent 4 }}
+spec:
+  backoffLimit: {{ .Values.migrate.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrate.activeDeadlineSeconds }}
+  {{- with .Values.migrate.ttlSecondsAfterFinished }}
+  ttlSecondsAfterFinished: {{ . }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "ddc-pme.componentLabels" (dict "root" . "component" "migrate") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "ddc-pme.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      {{- include "ddc-pme.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext.backend | nindent 8 }}
+      {{- include "ddc-pme.backendScheduling" (dict "root" . "component" "migrate") | nindent 6 }}
+      containers:
+        - name: migrate
+          image: {{ $image | quote }}
+          imagePullPolicy: {{ include "ddc-pme.pullPolicy" (dict "root" . "image" .Values.migrate.image) }}
+          # The image has no CMD/ENTRYPOINT: the command is supplied here.
+          command:
+            {{- toYaml .Values.migrate.command | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext.migrate | nindent 12 }}
+          env:
+            {{- include "ddc-pme.dbEnv" . | nindent 12 }}
+            - name: NODE_ENV
+              value: production
+            # npx / prisma write caches under $HOME; the root filesystem is read-only.
+            - name: HOME
+              value: /tmp
+            - name: npm_config_cache
+              value: /tmp/.npm
+            - name: npm_config_update_notifier
+              value: "false"
+            {{- include "ddc-pme.extraEnv" .Values.migrate.extraEnv | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources.migrate | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.migrate.tmpSizeLimit }}
+{{- end }}

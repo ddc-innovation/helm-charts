@@ -1,0 +1,109 @@
+# =============================================================================
+# ddc-pme: DEV sizing profile
+#
+# Layer it over values.yaml together with the image-tag overlay:
+#   helm upgrade --install ddc-pme ./ddc-pme -n ddc-pme \
+#     -f values-dev.yaml -f image-tags.yaml
+#
+# SAME NAMES AS PROD. There is exactly one environment on this cluster:
+#   namespace ddc-pme, host ddc-pme.dinecodetalkers.com, Keycloak client ddc-pme,
+#   database ddc_pme, release ddc-pme. Nothing here carries a "-dev" suffix.
+# values-dev.yaml and values-prod.yaml differ ONLY in sizing and runtime
+# settings (replicas, resources, volume sizes, log level, pools, PDB / spread).
+# Switching profile is a `helm upgrade` of the SAME release with the other file.
+# The two profiles are NOT meant to run side by side: they would collide on the
+# namespace, the host, the Keycloak client and the database. Do not install
+# either one under another release name or namespace.
+#
+# Switching dev -> prod (or back) changes the MinIO / Redis volume size, and
+# Kubernetes forbids editing a StatefulSet's volumeClaimTemplates. See
+# README.md ("Sizing profiles") for the one-time procedure.
+#
+# The image tag is NOT set here: it comes from the image-tags.yaml overlay
+# (global.imageTag), so a profile never pins a release by accident.
+# NO SECRETS in this file. Credentials live in Secrets created in Rancher
+# (existingSecrets.* in values.yaml).
+# =============================================================================
+
+# --- Shared real endpoints and names (identical in values-prod.yaml) ---------
+ingress:
+  host: ddc-pme.dinecodetalkers.com
+
+mysql:
+  # Remote Percona 192.168.250.15:3306 (the chart takes host and port apart).
+  host: 192.168.250.15
+  port: 3306
+  database: ddc_pme
+
+keycloak:
+  baseUrl: https://sso.dinecodetalkers.com
+  realm: innonet
+  clientId: ddc-pme
+  redirectUri: https://ddc-pme.dinecodetalkers.com/auth/callback
+  postLogoutRedirectUri: https://ddc-pme.dinecodetalkers.com/
+  # No password grant in any deployed environment (the API answers it 410), so
+  # the login page shows Keycloak sign-in only.
+  oidcOnly: true
+
+# --- Sizing and runtime: DEV -------------------------------------------------
+nginx:
+  replicas: 1
+
+api:
+  replicas: 1
+  # Smaller pools: 1 replica x 5 connections on the shared Percona.
+  databasePoolMax: 5
+  databasePoolMin: 1
+
+worker:
+  replicas: 1
+  databasePoolMax: 3
+  databasePoolMin: 1
+  jobsConcurrency: 2
+
+app:
+  logLevel: debug
+
+redis:
+  maxmemory: 128mb
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: longhorn
+
+minio:
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: longhorn
+
+resources:
+  nginx:
+    requests: { cpu: 25m, memory: 32Mi }
+    limits: { cpu: 250m, memory: 128Mi }
+  api:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+  worker:
+    requests: { cpu: 50m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi }
+  redis:
+    requests: { cpu: 25m, memory: 64Mi }
+    limits: { memory: 256Mi }   # above --maxmemory (128mb)
+  minio:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 250m, memory: 384Mi }
+
+# One replica each: no PodDisruptionBudget (it would block node drains), no
+# HPA, no anti-affinity (nothing to spread).
+scheduling:
+  podAntiAffinity:
+    enabled: false
+  podDisruptionBudget:
+    enabled: false
+
+autoscaling:
+  nginx:
+    enabled: false
+  api:
+    enabled: false

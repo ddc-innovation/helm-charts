@@ -1,0 +1,52 @@
+{{- /*
+Non-secret environment shared by api and worker (loaded with envFrom).
+NO credentials here: DB_*, REDIS_*, S3 keys and DATABASE_URL / REDIS_URL (which
+embed a password through $(VAR)) are container `env` entries that read Secrets;
+a ConfigMap cannot expand $(VAR), so they could not live here anyway.
+Never set JWT_ACCESS_SECRET, DEV_AUTH_PASSWORD or ALLOW_PASSWORD_GRANT=true.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ddc-pme.configName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ddc-pme.componentLabels" (dict "root" . "component" "config") | nindent 4 }}
+data:
+  NODE_ENV: {{ .Values.app.nodeEnv | quote }}
+  LOG_LEVEL: {{ .Values.app.logLevel | quote }}
+  SWAGGER_ENABLED: {{ .Values.app.swaggerEnabled | quote }}
+  # --- HTTP edge -------------------------------------------------------------
+  CORS_ALLOWED_ORIGINS: {{ include "ddc-pme.corsOrigins" . | quote }}
+  TRUST_PROXY: {{ .Values.app.trustProxy | toString | quote }}
+  RATE_LIMIT_TTL_MS: {{ .Values.app.rateLimitTtlMs | int64 | quote }}
+  RATE_LIMIT_MAX: {{ .Values.app.rateLimitMax | int64 | quote }}
+  MAX_CONCURRENT_SESSIONS: {{ .Values.app.maxConcurrentSessions | int64 | quote }}
+  MAX_UPLOAD_BYTES: {{ .Values.app.maxUploadBytes | int64 | quote }}
+  # --- Identity (Keycloak, RS256 via JWKS). No secret involved. -------------
+  OIDC_ISSUER: {{ include "ddc-pme.oidcIssuer" . | quote }}
+  OIDC_JWKS_URI: {{ include "ddc-pme.oidcJwksUri" . | quote }}
+  OIDC_AUDIENCE: {{ .Values.keycloak.audience | quote }}
+  OIDC_MANAGER_CLAIM: {{ .Values.keycloak.managerClaim | quote }}
+  # --- Queue -----------------------------------------------------------------
+  QUEUE_PREFIX: {{ .Values.app.queuePrefix | quote }}
+  # --- Object storage (keys come from the Secret) ----------------------------
+  STORAGE_DRIVER: {{ .Values.app.storageDriver | quote }}
+  S3_REGION: {{ .Values.app.s3Region | quote }}
+  S3_BUCKET: {{ .Values.app.s3Bucket | quote }}
+  S3_PRESIGN_TTL_SECONDS: {{ .Values.app.s3PresignTtlSeconds | int64 | quote }}
+  {{- with (include "ddc-pme.s3Endpoint" .) }}
+  S3_ENDPOINT: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.minio.publicEndpoint }}
+  S3_PUBLIC_ENDPOINT: {{ . | quote }}
+  {{- end }}
+  # --- Feature flags ----------------------------------------------------------
+  FEATURE_EXPORT_PAGE: {{ .Values.app.featureExportPage | quote }}
+  FEATURE_REAL_AI: {{ .Values.app.featureRealAi | quote }}
+  {{- with .Values.app.aiBaseUrl }}
+  AI_BASE_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.app.aiModel }}
+  AI_MODEL: {{ . | quote }}
+  {{- end }}

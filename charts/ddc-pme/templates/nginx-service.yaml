@@ -1,0 +1,19 @@
+{{- if .Values.nginx.enabled }}
+{{- /* ClusterIP only (enforced by ddc-pme.serviceType). Reached through the Ingress / IngressRoute. */ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ddc-pme.componentName" (dict "root" . "component" "nginx") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ddc-pme.componentLabels" (dict "root" . "component" "nginx") | nindent 4 }}
+spec:
+  type: {{ include "ddc-pme.serviceType" (dict "component" "nginx" "type" .Values.nginx.service.type) }}
+  selector:
+    {{- include "ddc-pme.componentSelectorLabels" (dict "root" . "component" "nginx") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.nginx.service.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

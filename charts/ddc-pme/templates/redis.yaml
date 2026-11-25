@@ -1,0 +1,125 @@
+{{- if .Values.redis.enabled }}
+{{- $name := include "ddc-pme.componentName" (dict "root" . "component" "redis") }}
+{{- $sel := include "ddc-pme.componentSelectorLabels" (dict "root" . "component" "redis") }}
+{{- $s := .Values.existingSecrets.redis }}
+{{- $p := .Values.redis.persistence }}
+---
+# Redis: BullMQ queues + token blacklist. ClusterIP only, never on the Ingress.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ddc-pme.componentLabels" (dict "root" . "component" "redis") | nindent 4 }}
+spec:
+  type: {{ include "ddc-pme.serviceType" (dict "component" "redis" "type" .Values.redis.service.type) }}
+  selector:
+    {{- $sel | nindent 4 }}
+  ports:
+    - name: redis
+      port: {{ .Values.redis.service.port }}
+      targetPort: redis
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ddc-pme.componentLabels" (dict "root" . "component" "redis") | nindent 4 }}
+spec:
+  # One instance: Redis here is a single queue/blacklist store, not a cluster.
+  replicas: 1
+  serviceName: {{ $name }}
+  selector:
+    matchLabels:
+      {{- $sel | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        {{- include "ddc-pme.componentLabels" (dict "root" . "component" "redis") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "ddc-pme.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- include "ddc-pme.imagePullSecrets" . | nindent 6 }}
+      {{- with .Values.podSecurityContext.redis }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- include "ddc-pme.scheduling" . | nindent 6 }}
+      containers:
+        - name: redis
+          image: {{ include "ddc-pme.image" (dict "root" . "image" .Values.redis.image "component" "redis") | quote }}
+          imagePullPolicy: {{ include "ddc-pme.pullPolicy" (dict "root" . "image" .Values.redis.image) }}
+          # Exec form (no shell): the kubelet expands $(REDIS_PASSWORD) from the
+          # env entry below, so the password is never written to a manifest.
+          command: ["redis-server"]
+          args:
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            - --appendonly
+            - "yes"
+            - --maxmemory
+            - {{ .Values.redis.maxmemory | toString | quote }}
+            - --maxmemory-policy
+            - {{ .Values.redis.maxmemoryPolicy | toString | quote }}
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $s.name }}
+                  key: {{ $s.passwordKey }}
+            # Read by redis-cli (probes): keeps the password off its argv.
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $s.name }}
+                  key: {{ $s.passwordKey }}
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          {{- with .Values.probes.redis.liveness }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.probes.redis.readiness }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources.redis }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.containerSecurityContext.redis }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      {{- if not $p.enabled }}
+      volumes:
+        - name: data
+          emptyDir: {}
+      {{- end }}
+  {{- if $p.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "ddc-pme.componentLabels" (dict "root" . "component" "redis") | nindent 10 }}
+      spec:
+        accessModes:
+          - {{ $p.accessMode }}
+        # Explicit, never the cluster default.
+        storageClassName: {{ $p.storageClass | quote }}
+        resources:
+          requests:
+            storage: {{ $p.size | quote }}
+  {{- end }}
+{{- end }}

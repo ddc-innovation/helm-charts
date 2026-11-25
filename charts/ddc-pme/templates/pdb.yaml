@@ -1,0 +1,38 @@
+{{- /*
+Optional PodDisruptionBudgets (scheduling.podDisruptionBudget.enabled) for the
+replicated workloads: nginx, api and worker. A PDB on a single-replica workload
+would block every node drain (minAvailable 1 of 1), so a component is skipped
+unless it will run at least 2 Pods (its replicas, or its HPA minReplicas).
+*/ -}}
+{{- $pdb := .Values.scheduling.podDisruptionBudget }}
+{{- if $pdb.enabled }}
+{{- $items := list }}
+{{- if .Values.nginx.enabled }}
+{{- $items = append $items (dict "component" "nginx" "replicas" (ternary .Values.autoscaling.nginx.minReplicas .Values.nginx.replicas .Values.autoscaling.nginx.enabled)) }}
+{{- end }}
+{{- $items = append $items (dict "component" "api" "replicas" (ternary .Values.autoscaling.api.minReplicas .Values.api.replicas .Values.autoscaling.api.enabled)) }}
+{{- if .Values.worker.enabled }}
+{{- $items = append $items (dict "component" "worker" "replicas" .Values.worker.replicas) }}
+{{- end }}
+{{- range $item := $items }}
+{{- if ge (int $item.replicas) 2 }}
+{{- /* A number (not a "50%" string): from a values file it is float64, from --set int64. */ -}}
+{{- if and (regexMatch "^[0-9]+$" (toString $pdb.minAvailable)) (ge (int $pdb.minAvailable) (int $item.replicas)) }}
+{{- fail (printf "ddc-pme: scheduling.podDisruptionBudget.minAvailable (%v) must be lower than the %s replica count (%v), or no Pod could ever be evicted." $pdb.minAvailable $item.component $item.replicas) }}
+{{- end }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "ddc-pme.componentName" (dict "root" $ "component" $item.component) }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "ddc-pme.componentLabels" (dict "root" $ "component" $item.component) | nindent 4 }}
+spec:
+  minAvailable: {{ $pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "ddc-pme.componentSelectorLabels" (dict "root" $ "component" $item.component) | nindent 6 }}
+{{- end }}
+{{- end }}
+{{- end }}

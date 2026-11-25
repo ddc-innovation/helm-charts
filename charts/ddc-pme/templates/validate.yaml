@@ -1,0 +1,12 @@
+{{- /*
+Render-time guards. This file emits NO manifest: it only runs the checks in
+_helpers.tpl ("ddc-pme.validate") so that a bad configuration fails
+`helm lint/template/install/upgrade` with a readable message:
+  * missing global.imageTag / tag "latest"
+  * Service type other than ClusterIP (NodePort, LoadBalancer)
+  * ingress.kind not Ingress|IngressRoute
+  * production settings the API would refuse to boot with
+  * required existing Secrets / keys missing (live cluster only, see
+    secretValidation.*)
+*/ -}}
+{{- include "ddc-pme.validate" . -}}

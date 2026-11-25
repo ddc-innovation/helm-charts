@@ -1,0 +1,17 @@
+# Patterns to ignore when building packages.
+.DS_Store
+.git/
+.gitignore
+.vscode/
+.idea/
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+# Local overrides must never be packaged (they can hold hostnames/tags).
+values-local*.yaml
+values-secret*.yaml
+ 
+# Verification scripts (ci/check.sh, ci/live-verify.sh) are not part of the chart. 
+ci/ 

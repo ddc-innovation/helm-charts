@@ -1,0 +1,139 @@
+# =============================================================================
+# ddc-pme: PROD sizing profile
+#
+# Layer it over values.yaml together with the image-tag overlay:
+#   helm upgrade --install ddc-pme ./ddc-pme -n ddc-pme \
+#     -f values-prod.yaml -f image-tags.yaml
+#
+# SAME NAMES AS DEV. There is exactly one environment on this cluster:
+#   namespace ddc-pme, host ddc-pme.dinecodetalkers.com, Keycloak client ddc-pme,
+#   database ddc_pme, release ddc-pme. Nothing here carries a "-prod" suffix.
+# values-dev.yaml and values-prod.yaml differ ONLY in sizing and runtime
+# settings (replicas, resources, volume sizes, log level, pools, PDB / spread).
+# Switching profile is a `helm upgrade` of the SAME release with the other file.
+# The two profiles are NOT meant to run side by side: they would collide on the
+# namespace, the host, the Keycloak client and the database. Do not install
+# either one under another release name or namespace.
+#
+# Switching dev -> prod (or back) changes the MinIO / Redis volume size, and
+# Kubernetes forbids editing a StatefulSet's volumeClaimTemplates. See
+# README.md ("Sizing profiles") for the one-time procedure.
+#
+# The image tag is NOT set here: it comes from the image-tags.yaml overlay
+# (global.imageTag), so a profile never pins a release by accident.
+# NO SECRETS in this file. Credentials live in Secrets created in Rancher
+# (existingSecrets.* in values.yaml).
+# =============================================================================
+
+# --- Shared real endpoints and names (identical in values-dev.yaml) ----------
+ingress:
+  host: ddc-pme.dinecodetalkers.com
+
+mysql:
+  # Remote Percona 192.168.250.15:3306 (the chart takes host and port apart).
+  host: 192.168.250.15
+  port: 3306
+  database: ddc_pme
+
+keycloak:
+  baseUrl: https://sso.dinecodetalkers.com
+  realm: innonet
+  clientId: ddc-pme
+  redirectUri: https://ddc-pme.dinecodetalkers.com/auth/callback
+  postLogoutRedirectUri: https://ddc-pme.dinecodetalkers.com/
+  # No password grant in any deployed environment (the API answers it 410), so
+  # the login page shows Keycloak sign-in only.
+  oidcOnly: true
+
+# --- Sizing and runtime: PROD ------------------------------------------------
+nginx:
+  replicas: 2
+
+api:
+  # >= 2 so one node loss or a rolling update never takes the API down.
+  # Shared Percona connections: 2 x 20 (api) + 2 x 5 (worker) = 50.
+  replicas: 2
+  databasePoolMax: 20
+  databasePoolMin: 2
+
+worker:
+  # Cron jobs run under a Redis lock, so 2 replicas are safe.
+  replicas: 2
+  databasePoolMax: 5
+  databasePoolMin: 1
+  jobsConcurrency: 5
+
+app:
+  logLevel: info
+
+redis:
+  maxmemory: 256mb
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: longhorn
+
+minio:
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClass: longhorn
+
+# Limits are the ones in backend/docker-compose.yml (api 1 CPU / 768M, worker
+# 2 CPU / 1536M, nginx 0.5 CPU / 128M); memory requests are its reservations
+# (api 256M, worker 512M). CPU requests are what the HPA percentage is of.
+resources:
+  nginx:
+    requests: { cpu: 100m, memory: 64Mi }
+    limits: { cpu: "0.5", memory: 128Mi }
+  api:
+    requests: { cpu: 500m, memory: 256Mi }
+    limits: { cpu: "1", memory: 768Mi }
+  worker:
+    requests: { cpu: 500m, memory: 512Mi }
+    limits: { cpu: "2", memory: 1536Mi }
+  redis:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { memory: 384Mi }   # above --maxmemory (256mb)
+  minio:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "0.5", memory: 512Mi }
+
+scheduling:
+  # Keep every Pod off the RKE2 server/control-plane node so the replicas land
+  # on the 3 worker nodes. (A node without that label is simply unaffected.)
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: DoesNotExist
+  # Replicas of the same component (nginx, api, worker) go to different workers.
+  # `preferred` (soft) on purpose: with maxUnavailable 0 + maxSurge 1 a hard
+  # rule would leave a rolling update Pending while a worker is down.
+  # Use mode: required only if you accept that.
+  podAntiAffinity:
+    enabled: true
+    mode: preferred
+    topologyKey: kubernetes.io/hostname
+  # nginx, api and worker each run 2 Pods: allow one voluntary disruption at a
+  # time (node drain / upgrade).
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+# Optional HPA for nginx and api (off by default; needs metrics-server).
+# While enabled, the Deployment drops `replicas` and minReplicas applies.
+# Check max_connections on the shared Percona first: pods x databasePoolMax.
+autoscaling:
+  nginx:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 80
+  api:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 70

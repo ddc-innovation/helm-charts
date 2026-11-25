@@ -1,0 +1,78 @@
+{{- if .Values.nginx.enabled }}
+{{- /*
+nginx: serves the SPA and proxies /api/v1 to the API Service. It is the ONLY
+workload the Ingress / IngressRoute routes to.
+*/ -}}
+{{- $name := include "ddc-pme.componentName" (dict "root" . "component" "nginx") }}
+{{- $image := dict "root" . "image" .Values.nginx.image "component" "nginx" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ddc-pme.componentLabels" (dict "root" . "component" "nginx") | nindent 4 }}
+spec:
+  {{- /* With an HPA the autoscaler owns the replica count. */}}
+  {{- if not .Values.autoscaling.nginx.enabled }}
+  replicas: {{ .Values.nginx.replicas }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "ddc-pme.componentSelectorLabels" (dict "root" . "component" "nginx") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ddc-pme.componentLabels" (dict "root" . "component" "nginx") | nindent 8 }}
+      annotations:
+        # The config is mounted with subPath (never live-updated), so a changed
+        # default.conf / security headers / env-config.js must roll the Pods.
+        checksum/config: {{ include (print $.Template.BasePath "/nginx-configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "ddc-pme.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      terminationGracePeriodSeconds: {{ .Values.nginx.terminationGracePeriodSeconds }}
+      {{- include "ddc-pme.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext.nginx | nindent 8 }}
+      {{- include "ddc-pme.backendScheduling" (dict "root" . "component" "nginx") | nindent 6 }}
+      containers:
+        - name: nginx
+          image: {{ include "ddc-pme.image" $image | quote }}
+          imagePullPolicy: {{ include "ddc-pme.pullPolicy" (dict "root" . "image" .Values.nginx.image) }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext.nginx | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.nginx.containerPort }}
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.probes.nginx.liveness | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.probes.nginx.readiness | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources.nginx | nindent 12 }}
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+              readOnly: true
+            - name: nginx-config
+              mountPath: /etc/nginx/snippets/security-headers.conf
+              subPath: security-headers.conf
+              readOnly: true
+            - name: nginx-config
+              mountPath: /usr/share/nginx/html/env-config.js
+              subPath: env-config.js
+              readOnly: true
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: {{ include "ddc-pme.nginxConfigName" . }}
+{{- end }}
