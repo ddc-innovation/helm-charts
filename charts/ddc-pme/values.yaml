@@ -1,0 +1,679 @@
+# =============================================================================
+# ddc-pme Helm chart: default values
+#
+# Rules of this chart
+#   * Helm NEVER creates a Secret or a credential. Every password / key is read
+#     by the Pods from a Secret that already exists in the release namespace
+#     (create them in Rancher first; see `existingSecrets` below).
+#   * Every Service is ClusterIP. Outside access goes through `ingress` only.
+#     NodePort / LoadBalancer is rejected at render time.
+#   * Images are pinned by tag. `global.imageTag` has NO default and is
+#     REQUIRED; `latest` is rejected.
+#   * Active lines are the safe defaults. Optional settings are commented out
+#     (uncomment to use them).
+#
+# Minimal install:
+#   helm upgrade --install ddc-pme ./ddc-pme -n ddc-pme \
+#     --set global.imageTag=1.2.3 \
+#     --set mysql.host=<percona-host> \
+#     --set keycloak.baseUrl=https://<keycloak-host>
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# global: settings shared by every component
+# -----------------------------------------------------------------------------
+global:
+  # REQUIRED. Image tag applied to every component that does not set its own
+  # `image.tag`. Must be immutable (a version or git SHA), never "latest".
+  # Left empty on purpose so a forgotten tag fails the render, not the rollout.
+  imageTag: ""
+  # Pull policy for every component. IfNotPresent is right for immutable tags.
+  imagePullPolicy: IfNotPresent
+  # Extra labels added to every object (e.g. cost-centre, team).
+  commonLabels: {}
+  #   team: platform
+
+# Override the chart name / release-qualified name used in object names.
+nameOverride: ""
+fullnameOverride: ""
+
+# Registry pull secrets. The default images on docker.io are PUBLIC, so none
+# are needed. For a private registry, create a docker-registry Secret in
+# Rancher first and list it here (Helm will not create it):
+imagePullSecrets: []
+#  - name: regcred
+
+# -----------------------------------------------------------------------------
+# existingSecrets: Secrets that MUST already exist in the release namespace.
+# The chart only references them (secretKeyRef) and validates them at
+# install/upgrade time. It never creates or modifies them.
+# -----------------------------------------------------------------------------
+existingSecrets:
+  # Remote Percona MySQL account used by the API, worker and migrate Job.
+  mysql:
+    name: ddc-pme-mysql
+    usernameKey: username
+    passwordKey: password
+  # Redis password. Used by the in-cluster Redis (requirepass) and by the
+  # API/worker clients.
+  redis:
+    name: ddc-pme-redis
+    passwordKey: password
+  # S3 credentials. Used by the API/worker as S3_ACCESS_KEY_ID /
+  # S3_SECRET_ACCESS_KEY and, when minio.enabled, as the MinIO root user.
+  minio:
+    name: ddc-pme-minio
+    accessKeyKey: access-key
+    secretKeyKey: secret-key
+  # Keycloak client secret. Required ONLY when keycloak.publicClient=false
+  # (confidential client). The default public PKCE client has no secret, so
+  # this Secret is neither validated nor referenced.
+  keycloak:
+    name: ddc-pme-keycloak
+    clientSecretKey: client-secret
+
+# -----------------------------------------------------------------------------
+# secretValidation: fail `helm install/upgrade` early and clearly if a
+# required Secret or key is missing (uses the Helm `lookup` function).
+# -----------------------------------------------------------------------------
+secretValidation:
+  # Keep true for every real release.
+  enabled: true
+  # `lookup` returns nothing offline, so `helm lint`, `helm template` and
+  # `--dry-run=client` cannot see Secrets. Set true ONLY for those CI render
+  # checks (--set secretValidation.allowOffline=true). With a live API server
+  # (`--dry-run=server`, install, upgrade) leave it false.
+  allowOffline: false
+
+# -----------------------------------------------------------------------------
+# serviceAccount
+# -----------------------------------------------------------------------------
+serviceAccount:
+  # Create a ServiceAccount for the Pods. No RBAC is granted to it.
+  create: true
+  # Defaults to the release fullname when empty.
+  name: ""
+  annotations: {}
+  # The Pods never call the Kubernetes API, so do not mount a token.
+  automountServiceAccountToken: false
+
+# -----------------------------------------------------------------------------
+# ingress: the single way in from outside the cluster (Traefik on Rancher)
+# -----------------------------------------------------------------------------
+ingress:
+  enabled: true
+  # Ingress        = networking.k8s.io/v1 Ingress (portable)
+  # IngressRoute   = Traefik CRD traefik.io/v1alpha1 (needs Traefik CRDs)
+  kind: Ingress
+  className: traefik
+  host: ddc-pme.dinecodetalkers.com
+  # Traefik entry points (IngressRoute, and the router annotation on Ingress).
+  # `web` = plain HTTP :80. Use [websecure] together with tls.enabled=true.
+  entryPoints:
+    - web
+  annotations: {}
+  # TLS is OFF by default. To terminate TLS at Traefik with an existing
+  # kubernetes.io/tls Secret (Helm will not create it):
+  tls:
+    enabled: false
+    # secretName: ddc-pme-tls
+    # IngressRoute only: use a Traefik certResolver instead of a Secret.
+    # certResolver: letsencrypt
+
+# -----------------------------------------------------------------------------
+# nginx: the SPA + reverse proxy for /api/v1 (image pme-frontend)
+# -----------------------------------------------------------------------------
+nginx:
+  enabled: true
+  replicas: 2
+  image:
+    repository: docker.io/rstevens198238/pme-frontend
+    # tag: ""          # empty = global.imageTag
+    # pullPolicy: ""   # empty = global.imagePullPolicy
+  service:
+    type: ClusterIP    # only ClusterIP is allowed
+    port: 80
+  # Container port nginx listens on (the image listens on 80).
+  containerPort: 80
+  terminationGracePeriodSeconds: 30
+  # DNS server nginx uses to resolve the API Service name at REQUEST time (so a
+  # missing API never stops nginx from starting). Replaces docker's embedded DNS.
+  # Default = RKE2 CoreDNS Service (10.43.0.10, verified from a Pod). A hostname
+  # is resolved once at start through the Pod's own resolver; if you prefer no
+  # dependency on that, set the Service IP instead (see `kubectl -n kube-system
+  # get svc`), e.g. resolver: 10.43.0.10
+  resolver: rke2-coredns-rke2-coredns.kube-system.svc.cluster.local
+  # How long nginx caches a DNS answer (Service IPs are stable; keep it short).
+  resolverValid: 10s
+  # Cluster DNS suffix used to build the API Service name.
+  clusterDomain: cluster.local
+  # Extra origins appended to the CSP `connect-src` (the Keycloak origin taken
+  # from keycloak.baseUrl is always added).
+  extraConnectSrc: []
+  #  - https://telemetry.example.com
+
+# -----------------------------------------------------------------------------
+# api: NestJS HTTP API (image pme-backend, `node dist/main.js`, port 8000)
+# -----------------------------------------------------------------------------
+api:
+  replicas: 2
+  image:
+    repository: docker.io/rstevens198238/pme-backend
+    # tag: ""
+    # pullPolicy: ""
+  service:
+    type: ClusterIP
+    port: 8000
+  containerPort: 8000
+  # Prisma pool per replica (DATABASE_POOL_MAX). Total connections to the
+  # SHARED database = replicas x this; size it against the DB's max_connections.
+  databasePoolMax: 20
+  databasePoolMin: 2
+  databaseStatementTimeoutMs: 15000
+  # Seconds to wait for in-flight requests on shutdown.
+  terminationGracePeriodSeconds: 30
+  # Size cap of the writable /tmp emptyDir (the root filesystem is read-only).
+  tmpSizeLimit: 64Mi
+  # Extra env for the api only (appended after app.extraEnv, so it wins).
+  extraEnv: []
+
+# -----------------------------------------------------------------------------
+# worker: BullMQ processors + cron jobs (same image as api, `node dist/worker.js`)
+# CPU/memory heavy (PDF/XLSX rendering), so it is a separate Deployment.
+# -----------------------------------------------------------------------------
+worker:
+  enabled: true
+  # Cron jobs run under a Redis lock, so >1 replica is safe.
+  replicas: 1
+  image:
+    repository: docker.io/rstevens198238/pme-backend
+    # tag: ""
+    # pullPolicy: ""
+  databasePoolMax: 5
+  databasePoolMin: 1
+  databaseStatementTimeoutMs: 60000
+  # Kill switch (JOBS_ENABLED): false boots the worker but runs nothing.
+  jobsEnabled: true
+  jobsConcurrency: 5
+  # Must exceed JOBS_SHUTDOWN_TIMEOUT_MS (25 s) so in-flight jobs can finish.
+  jobsShutdownTimeoutMs: 25000
+  terminationGracePeriodSeconds: 30
+  # Report rendering (PDF/XLSX) can use scratch space under /tmp.
+  tmpSizeLimit: 512Mi
+  # Extra env for the worker only (appended after app.extraEnv, so it wins).
+  extraEnv: []
+
+# -----------------------------------------------------------------------------
+# migrate: one-off Prisma migration Job (image pme-backend-migrate)
+# DISABLED by default. The database is a REMOTE, SHARED Percona instance, so a
+# schema change must be a deliberate act (back up first), never a side effect of
+# `helm upgrade`. The API/worker never migrate on startup.
+# -----------------------------------------------------------------------------
+#
+# It is a plain Job, NOT a Helm hook: nothing runs it implicitly. Run it on
+# purpose, after taking a backup:
+#   helm upgrade ddc-pme ./ddc-pme -n ddc-pme --reuse-values --set migrate.enabled=true
+#   kubectl -n ddc-pme logs job/<release>-ddc-pme-migrate-<hash>
+# then switch it off again (Helm deletes the finished Job):
+#   helm upgrade ddc-pme ./ddc-pme -n ddc-pme --reuse-values --set migrate.enabled=false
+# The Job name carries a hash of image+command, so a new tag makes a new Job
+# (a Job's pod template is immutable and cannot be patched in place).
+migrate:
+  enabled: false
+  image:
+    repository: docker.io/rstevens198238/pme-backend-migrate
+    # tag: ""
+    # pullPolicy: ""
+  # Command run by the Job (the image has no CMD).
+  command: ["npx", "prisma", "migrate", "deploy"]
+  backoffLimit: 0
+  activeDeadlineSeconds: 900
+  # Delete the finished Job after N seconds. Unset keeps it (and its logs)
+  # until migrate.enabled is switched off.
+  # ttlSecondsAfterFinished: 86400
+  tmpSizeLimit: 64Mi
+  # Extra env for the Job only.
+  extraEnv: []
+
+# -----------------------------------------------------------------------------
+# redis: BullMQ queues + token blacklist. In-cluster, password from
+# existingSecrets.redis.
+# -----------------------------------------------------------------------------
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: 7-alpine
+    # pullPolicy: ""
+  service:
+    type: ClusterIP
+    port: 6379
+  # Bound memory and evict (same policy as docker-compose): every key is a
+  # re-enqueueable job or a short-TTL blacklist entry.
+  maxmemory: 256mb
+  maxmemoryPolicy: allkeys-lru
+  # Persistence. Off = emptyDir (queue state is lost on Pod restart).
+  # On = a volumeClaimTemplate on the StatefulSet. The class is set EXPLICITLY
+  # (never the cluster default) and must not be empty.
+  persistence:
+    enabled: false
+    size: 1Gi
+    storageClass: longhorn
+    accessMode: ReadWriteOnce
+  # When redis.enabled=false, point at an external Redis (password still comes
+  # from existingSecrets.redis):
+  external: {}
+  #  host: redis.example.invalid
+  #  port: 6379
+
+# -----------------------------------------------------------------------------
+# minio: S3-compatible object storage (image pme-minio). The API REFUSES to
+# boot in production unless STORAGE_DRIVER=s3, so storage must exist.
+#   enabled=true  -> in-cluster MinIO (demo / small installs)
+#   enabled=false -> use an external S3 endpoint (minio.externalEndpoint) or
+#                    leave it empty to use AWS S3 with the default chain
+# NOTE: the community MinIO build is source-only with no security fixes; see
+# backend/minio/README.md before using it for anything important.
+# -----------------------------------------------------------------------------
+minio:
+  enabled: true
+  image:
+    repository: docker.io/rstevens198238/pme-minio
+    # pme-minio is tagged with the MinIO release (as in backend/docker-compose.yml),
+    # NOT the app version, so it does not follow global.imageTag. Pinned, never latest.
+    tag: RELEASE.2025-10-15T17-29-55Z
+    # pullPolicy: ""
+  service:
+    type: ClusterIP
+    apiPort: 9000
+    # Only exposed when consoleEnabled=true.
+    consolePort: 9001
+  # Web console (:9001). OFF by default: the Service does not expose it and the
+  # server runs with MINIO_BROWSER=off. When on it is still ClusterIP only and
+  # never on the Ingress; reach it with `kubectl port-forward svc/<release>-ddc-pme-minio 9001`.
+  consoleEnabled: false
+  # PLACEHOLDER. MinIO is internal only: the chart never routes it through the
+  # Ingress, and `true` is rejected at render time.
+  ingress:
+    enabled: false
+  # Data volume: a volumeClaimTemplate on the StatefulSet. The class is set
+  # EXPLICITLY (never the cluster default; the Longhorn class is not default
+  # on this cluster) and must not be empty. false = emptyDir (data is lost on
+  # Pod restart; demo only).
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: longhorn
+    accessMode: ReadWriteOnce
+  # Post-install/upgrade Job that creates app.s3Bucket. Idempotent
+  # (`mc mb --ignore-existing`), so re-running on every upgrade is safe.
+  bucketInit:
+    enabled: true
+    backoffLimit: 6
+    activeDeadlineSeconds: 600
+  # Used only when minio.enabled=false. Empty = AWS S3.
+  externalEndpoint: ""
+  # URL browsers use for presigned download links, when it differs from the
+  # in-cluster endpoint. Must be reachable from users' browsers.
+  # publicEndpoint: https://s3.dinecodetalkers.com
+
+# -----------------------------------------------------------------------------
+# networkPolicy: optional. Limits who may open a connection to Redis and MinIO
+# (needs a CNI that enforces NetworkPolicy; RKE2 canal does).
+#   redis  <- api, worker                    (6379)
+#   minio  <- api, worker, bucket-init Job   (9000 only; never the console port)
+# Everything else in the cluster is refused. Egress is not restricted.
+# -----------------------------------------------------------------------------
+networkPolicy:
+  enabled: false
+
+# -----------------------------------------------------------------------------
+# mysql: REMOTE shared Percona Server for MySQL 9.x. There is no DB container.
+# The credential is NOT here: it comes from existingSecrets.mysql and is
+# spliced into DATABASE_URL by the kubelet.
+# -----------------------------------------------------------------------------
+mysql:
+  # PLACEHOLDER (.invalid never resolves): the render succeeds but the API
+  # cannot reach a database until you set the real host.
+  host: db.example.invalid
+  port: 3306
+  database: ddc_pme
+  # Appended to DATABASE_URL as the query string. The Percona server has
+  # require_secure_transport=ON, so TLS is mandatory.
+  # PROTOTYPE DEFAULT: the server presents a self-signed certificate, so
+  # `sslaccept=accept_invalid_certs` is on. That encrypts the connection but does
+  # NOT verify the server (a man-in-the-middle on the network path is possible).
+  # Once the server has a CA-signed certificate, set params to "sslmode=REQUIRED".
+  # The credential is spliced in as-is, so the DB password must be URL-safe
+  # (letters, digits, - _ . ~; no @ : / ? # % & =).
+  params: "sslmode=REQUIRED&sslaccept=accept_invalid_certs"
+
+# -----------------------------------------------------------------------------
+# keycloak: external identity provider (OIDC). The SPA does Authorization Code
+# + PKCE as a PUBLIC client; the API only verifies RS256 tokens against the
+# realm's JWKS, so no client secret is involved by default.
+#
+# THESE VALUES ARE THE SSO SWITCH. A wrong baseUrl is not a warning, it is a
+# broken deployment: `issuer` feeds BOTH the API's expected `iss` claim and the
+# browser's redirect target, so if it does not equal exactly what Keycloak puts
+# in tokens, every authenticated call fails 401 INVALID_ACCESS_TOKEN and the
+# login page cannot work. ddc-pme.validate therefore rejects a non-https,
+# placeholder, or origin-mismatched SSO setting at RENDER time (see _helpers.tpl)
+# instead of letting a valid-looking release ship a broken sign-in.
+#
+# The same values are repeated in values-dev.yaml and values-prod.yaml. Those
+# profiles are the authority for a real install; the copies here exist so a
+# render with defaults alone is still a coherent, honest deployment.
+# -----------------------------------------------------------------------------
+keycloak:
+  # Public base URL of Keycloak AS BROWSERS SEE IT (include any /auth prefix on
+  # legacy installs). No trailing slash, no realm path. issuer is derived from
+  # it below. Client registration lives in digin-automation
+  # (ansible/applications/keycloak/vars/realm-client.yml); these values MUST
+  # agree with it or Keycloak rejects the redirect / the API rejects the token.
+  baseUrl: https://sso.dinecodetalkers.com
+  realm: innonet
+  # Public PKCE client id registered in the realm (no secret).
+  clientId: ddc-pme
+  # true  = public PKCE client, no secret (default; ddc-pme-keycloak NOT needed)
+  # false = confidential client. NOT SUPPORTED: although backendSecretEnv injects
+  # KEYCLOAK_CLIENT_SECRET, no code reads it (the API has no such env setting) and
+  # this SPA signs in straight against Keycloak with PKCE, which has no
+  # confidential-client mode. The render fails so nobody configures a dead mode.
+  publicClient: true
+  # Where Keycloak sends the browser back after login / logout. Both must be
+  # registered in the Keycloak client, and both must be on this release's own
+  # origin (ingress.host) - the render fails otherwise.
+  redirectUri: https://ddc-pme.dinecodetalkers.com/auth/callback
+  postLogoutRedirectUri: https://ddc-pme.dinecodetalkers.com/
+  # Expected `aud` of access tokens (OIDC_AUDIENCE). Supplied by the
+  # pme-api-audience mapper on the client. NEVER leave this empty: the API only
+  # checks `aud` when it is configured, so an empty value silently accepts any
+  # token minted for a different client in the same realm.
+  audience: pme-api
+  # Realm role/claim naming the manager flag (OIDC_MANAGER_CLAIM). Mapped from
+  # the user attribute `manager` by the client's `manager` mapper.
+  managerClaim: manager
+  # True = the login page hides the email/password form and signs in through
+  # Keycloak only. Keep it true in production: the API's password grant answers
+  # 410 PASSWORD_GRANT_DISABLED unless ALLOW_PASSWORD_GRANT is set, which this
+  # chart refuses to inject. Offering a form that can only ever fail is worse
+  # than not showing it. (The frontend ignores this flag when no issuer is
+  # configured, so it can never strand the page without a way in.)
+  oidcOnly: true
+  # Overrides, derived from baseUrl + realm when empty:
+  #   issuer  = <baseUrl>/realms/<realm>
+  #   jwksUri = <issuer>/protocol/openid-connect/certs
+  # issuer: ""
+  # jwksUri: ""   # set when the API must fetch keys from an in-cluster URL
+
+# -----------------------------------------------------------------------------
+# app: application environment (see backend/src/common/config/env.ts)
+# -----------------------------------------------------------------------------
+app:
+  # production turns on the API's boot guardrails (JWKS required, s3 storage,
+  # no wildcard CORS, no password grant). Keep it.
+  nodeEnv: production
+  # Browser origins allowed to call the API (comma separated). Empty = derive
+  # https://<ingress.host>. No wildcard in production.
+  corsAllowedOrigins: ""
+  # Number of reverse proxies in front of the API, for req.ip (rate limiting
+  # and audit): e.g. external LB/Traefik -> nginx -> api. Too low = every user
+  # shares one rate-limit bucket; too high = clients can spoof their IP. Check
+  # the real hop count of your cluster (Traefik alone + nginx is 2).
+  trustProxy: "3"
+  logLevel: info          # fatal|error|warn|info|debug|trace|silent
+  swaggerEnabled: false   # spec: off in production
+  # Object storage.
+  storageDriver: s3       # must be s3 in production
+  s3Region: us-east-1
+  s3Bucket: pme-artifacts
+  s3PresignTtlSeconds: 300
+  maxUploadBytes: 52428800
+  # Rate limit per client IP.
+  rateLimitTtlMs: 60000
+  rateLimitMax: 100
+  maxConcurrentSessions: 3
+  queuePrefix: pme
+  # Feature flags (both default off).
+  featureExportPage: false
+  featureRealAi: false
+  # Real AI provider. The API key is a credential: it is NOT a chart value.
+  # Add it through extraEnv with a secretKeyRef to a Secret you created.
+  # aiBaseUrl: https://ai.example.invalid   # https only in production
+  # aiModel: default
+  # Extra environment variables for api AND worker. Any Kubernetes env entry
+  # is accepted, including secretKeyRef:
+  extraEnv: []
+  #  - name: DATABASE_SLOW_QUERY_MS
+  #    value: "500"
+  #  - name: AI_API_KEY
+  #    valueFrom:
+  #      secretKeyRef: { name: my-ai-secret, key: api-key }
+
+# -----------------------------------------------------------------------------
+# securityContext: restricted by default. The backend image runs as pme,
+# uid/gid 10001 (see backend/Dockerfile).
+# -----------------------------------------------------------------------------
+podSecurityContext:
+  backend:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  # The stock nginx image keeps its own user, so only the seccomp profile is
+  # forced there.
+  nginx:
+    seccompProfile:
+      type: RuntimeDefault
+  # redis:7-alpine ships user redis = 999:1000; pme-minio ships minio = 100:101.
+  # Numeric ids are required for runAsNonRoot to verify, and fsGroup makes the
+  # (root-owned) Longhorn volume writable. Re-check the ids if an image changes.
+  redis:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  minio:
+    runAsNonRoot: true
+    runAsUser: 100
+    runAsGroup: 101
+    fsGroup: 101
+    seccompProfile:
+      type: RuntimeDefault
+
+containerSecurityContext:
+  backend:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true   # /tmp is an emptyDir
+    capabilities:
+      drop: ["ALL"]
+  # The migrate image has no baked-in user, so it runs as the same uid. npx
+  # needs a writable HOME: the Job sets HOME=/tmp (emptyDir).
+  migrate:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+  # nginx starts as root to bind :80 then drops to `nginx`, and writes
+  # /var/cache/nginx and /var/run, so it cannot be read-only or non-root as is.
+  nginx:
+    allowPrivilegeEscalation: false
+  # redis writes only /data; minio only /data (both volumes). Verified with
+  # `docker run --read-only --cap-drop ALL`.
+  redis:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+  minio:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+# -----------------------------------------------------------------------------
+# resources: requests/limits per component. Starting points taken from
+# backend/docker-compose.yml; tune against the load test (README "Load test").
+# -----------------------------------------------------------------------------
+resources:
+  nginx:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { memory: 128Mi }
+  api:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits: { cpu: "1", memory: 768Mi }
+  worker:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { cpu: "2", memory: 1536Mi }
+  migrate:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 512Mi }
+  redis:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 384Mi }   # above --maxmemory so eviction, not OOM, happens first
+  minio:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "0.5", memory: 512Mi }
+  minioInit:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { memory: 128Mi }
+
+# -----------------------------------------------------------------------------
+# probes: HTTP/exec health checks per component.
+#   api /api/v1/health/live  = process up; NEVER touches the DB or IdP
+#   api /api/v1/health/ready = DB reachable; gates traffic, never restarts
+# -----------------------------------------------------------------------------
+probes:
+  nginx:
+    liveness:
+      httpGet: { path: /healthz, port: http }
+      initialDelaySeconds: 5
+      periodSeconds: 15
+      timeoutSeconds: 3
+      failureThreshold: 3
+    readiness:
+      httpGet: { path: /healthz, port: http }
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+  api:
+    startup:
+      httpGet: { path: /api/v1/health/live, port: http }
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 24     # up to 2 min to boot
+    liveness:
+      httpGet: { path: /api/v1/health/live, port: http }
+      periodSeconds: 15
+      timeoutSeconds: 5
+      failureThreshold: 3
+    readiness:
+      httpGet: { path: /api/v1/health/ready, port: http }
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+  # The worker has no HTTP port. It touches WORKER_LIVENESS_FILE every 10 s
+  # while it can reach Redis; stale for > 60 s = unhealthy.
+  worker:
+    liveness:
+      exec:
+        command:
+          - node
+          - -e
+          - "const s=require('fs').statSync('/tmp/worker-alive');process.exit(Date.now()-s.mtimeMs<60000?0:1)"
+      initialDelaySeconds: 30
+      periodSeconds: 30
+      timeoutSeconds: 5
+      failureThreshold: 3
+  # redis-cli reads the password from REDISCLI_AUTH (set from the Secret), so
+  # it never shows in the process list. Without grep, a NOAUTH reply would still
+  # exit 0, so the probe requires the literal PONG.
+  redis:
+    liveness:
+      exec: { command: ["sh", "-c", "redis-cli ping | grep -q PONG"] }
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+    readiness:
+      exec: { command: ["sh", "-c", "redis-cli ping | grep -q PONG"] }
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+  minio:
+    liveness:
+      httpGet: { path: /minio/health/live, port: api }
+      initialDelaySeconds: 10
+      periodSeconds: 15
+      timeoutSeconds: 3
+      failureThreshold: 3
+    readiness:
+      httpGet: { path: /minio/health/ready, port: api }
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+
+# -----------------------------------------------------------------------------
+# scheduling: applied to every Pod of the release
+# -----------------------------------------------------------------------------
+scheduling:
+  nodeSelector: {}
+  #  kubernetes.io/os: linux
+  tolerations: []
+  #  - key: dedicated
+  #    operator: Equal
+  #    value: pme
+  #    effect: NoSchedule
+  affinity: {}
+  topologySpreadConstraints: []
+  #  - maxSkew: 1
+  #    topologyKey: kubernetes.io/hostname
+  #    whenUnsatisfiable: ScheduleAnyway
+  # (a constraint without a labelSelector gets the component's selector labels)
+  # Generated podAntiAffinity for api, worker and nginx: replicas of ONE
+  # component avoid sharing a node (the selector is built from that component's
+  # labels). Redis/MinIO are single-replica and ignore it. A hand-written
+  # `scheduling.affinity.podAntiAffinity` replaces this rule.
+  #   mode: preferred = soft (a Pod still schedules when no free node is left,
+  #                     e.g. during a rolling update or a node outage)
+  #         required  = hard (a Pod stays Pending rather than share a node)
+  podAntiAffinity:
+    enabled: false
+    mode: preferred
+    topologyKey: kubernetes.io/hostname
+  # Optional PodDisruptionBudgets for nginx, api and worker. A component with
+  # fewer than 2 replicas (HPA minReplicas when autoscaling is on) is skipped,
+  # because a budget on a single Pod would block every node drain.
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+
+# -----------------------------------------------------------------------------
+# autoscaling: optional HorizontalPodAutoscaler for nginx and api (needs
+# metrics-server). The worker is not autoscaled: it holds cron locks and its
+# concurrency is tuned through worker.jobsConcurrency. While an HPA is enabled
+# the Deployment drops `replicas` (the HPA owns it) and minReplicas applies.
+# Utilization is a percentage of the container REQUEST (resources.*.requests).
+# DB connections = api pods x api.databasePoolMax: size maxReplicas against the
+# Percona max_connections before turning it on.
+# -----------------------------------------------------------------------------
+autoscaling:
+  nginx:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 80
+    # targetMemoryUtilizationPercentage: 80
+    scaleDownStabilizationSeconds: 300
+  api:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 70
+    # targetMemoryUtilizationPercentage: 80
+    scaleDownStabilizationSeconds: 300

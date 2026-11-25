@@ -1,0 +1,83 @@
+{{- if and .Values.ingress.enabled .Values.nginx.enabled }}
+{{- /*
+The ONLY way in from outside the cluster, and it routes to the nginx Service
+only (never api, redis or minio): nginx serves the SPA and proxies /api/v1.
+
+Traefik is provided by the cluster (rke2-traefik). This chart never deploys it.
+HTTP only by default: entry point `web`, no tls. The pfSense in front
+terminates TLS and Traefik trusts its X-Forwarded-* headers. Optional TLS
+(ingress.tls.enabled=true) terminates at Traefik with an EXISTING Secret.
+
+  kind: Ingress       networking.k8s.io/v1, ingressClassName + router annotations
+  kind: IngressRoute  traefik.io/v1alpha1 (Traefik CRD)
+*/ -}}
+{{- $name := include "ddc-pme.componentName" (dict "root" . "component" "nginx") }}
+{{- $host := required "ddc-pme: ingress.host is required" .Values.ingress.host }}
+{{- $entryPoints := .Values.ingress.entryPoints | default (list "web") }}
+{{- $tls := .Values.ingress.tls }}
+{{- if eq .Values.ingress.kind "IngressRoute" }}
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ddc-pme.componentLabels" (dict "root" . "component" "nginx") | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  entryPoints:
+    {{- toYaml $entryPoints | nindent 4 }}
+  routes:
+    - kind: Rule
+      match: Host(`{{ $host }}`)
+      services:
+        - name: {{ $name }}
+          port: {{ .Values.nginx.service.port }}
+  {{- if $tls.enabled }}
+  tls:
+    {{- if $tls.certResolver }}
+    certResolver: {{ $tls.certResolver }}
+    {{- else }}
+    secretName: {{ required "ddc-pme: ingress.tls.secretName (or certResolver) is required when ingress.tls.enabled=true" $tls.secretName }}
+    {{- end }}
+  {{- end }}
+{{- else }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ddc-pme.componentLabels" (dict "root" . "component" "nginx") | nindent 4 }}
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: {{ join "," $entryPoints | quote }}
+    {{- if $tls.enabled }}
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if $tls.enabled }}
+  tls:
+    - hosts:
+        - {{ $host | quote }}
+      secretName: {{ required "ddc-pme: ingress.tls.secretName is required when ingress.tls.enabled=true" $tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $name }}
+                port:
+                  name: http
+{{- end }}
+{{- end }}

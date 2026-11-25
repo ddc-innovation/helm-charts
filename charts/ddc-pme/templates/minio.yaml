@@ -1,0 +1,221 @@
+{{- if .Values.minio.enabled }}
+{{- $name := include "ddc-pme.componentName" (dict "root" . "component" "minio") }}
+{{- $sel := include "ddc-pme.componentSelectorLabels" (dict "root" . "component" "minio") }}
+{{- $s := .Values.existingSecrets.minio }}
+{{- $p := .Values.minio.persistence }}
+---
+# MinIO: S3-compatible object storage. ClusterIP only. NEVER referenced by the
+# Ingress / IngressRoute (see templates/ingress*.yaml and the render guard on
+# minio.ingress.enabled).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ddc-pme.componentLabels" (dict "root" . "component" "minio") | nindent 4 }}
+spec:
+  type: {{ include "ddc-pme.serviceType" (dict "component" "minio" "type" .Values.minio.service.type) }}
+  selector:
+    {{- $sel | nindent 4 }}
+  ports:
+    - name: api
+      port: {{ .Values.minio.service.apiPort }}
+      targetPort: api
+      protocol: TCP
+    {{- if .Values.minio.consoleEnabled }}
+    - name: console
+      port: {{ .Values.minio.service.consolePort }}
+      targetPort: console
+      protocol: TCP
+    {{- end }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ddc-pme.componentLabels" (dict "root" . "component" "minio") | nindent 4 }}
+spec:
+  # Single node, single drive (/data). Not a distributed MinIO.
+  replicas: 1
+  serviceName: {{ $name }}
+  selector:
+    matchLabels:
+      {{- $sel | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        {{- include "ddc-pme.componentLabels" (dict "root" . "component" "minio") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "ddc-pme.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- include "ddc-pme.imagePullSecrets" . | nindent 6 }}
+      {{- with .Values.podSecurityContext.minio }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- include "ddc-pme.scheduling" . | nindent 6 }}
+      containers:
+        - name: minio
+          image: {{ include "ddc-pme.image" (dict "root" . "image" .Values.minio.image "component" "minio") | quote }}
+          imagePullPolicy: {{ include "ddc-pme.pullPolicy" (dict "root" . "image" .Values.minio.image) }}
+          # The image ENTRYPOINT is `minio`; these are its arguments.
+          args:
+            - server
+            - /data
+            - --address
+            - ":9000"
+            - --console-address
+            - ":9001"
+          env:
+            # The same Secret the API/worker use as S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY.
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $s.name }}
+                  key: {{ $s.accessKeyKey }}
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $s.name }}
+                  key: {{ $s.secretKeyKey }}
+            - name: MINIO_BROWSER
+              value: {{ ternary "on" "off" .Values.minio.consoleEnabled | quote }}
+          ports:
+            - name: api
+              containerPort: 9000
+              protocol: TCP
+            {{- if .Values.minio.consoleEnabled }}
+            - name: console
+              containerPort: 9001
+              protocol: TCP
+            {{- end }}
+          {{- with .Values.probes.minio.liveness }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.probes.minio.readiness }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources.minio }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.containerSecurityContext.minio }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      {{- if not $p.enabled }}
+      volumes:
+        - name: data
+          emptyDir: {}
+      {{- end }}
+  {{- if $p.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "ddc-pme.componentLabels" (dict "root" . "component" "minio") | nindent 10 }}
+      spec:
+        accessModes:
+          - {{ $p.accessMode }}
+        # Explicit, never the cluster default.
+        storageClassName: {{ $p.storageClass | quote }}
+        resources:
+          requests:
+            storage: {{ $p.size | quote }}
+  {{- end }}
+
+{{- if .Values.minio.bucketInit.enabled }}
+---
+# Creates the bucket after install/upgrade. Idempotent: `mc mb --ignore-existing`
+# succeeds when the bucket already exists, so every upgrade may re-run it.
+# Helm runs post-install hooks AFTER the release's resources are applied (and
+# Ready when --wait is used); the loop below also tolerates a slow MinIO start.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "ddc-pme.componentName" (dict "root" . "component" "minio-init") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ddc-pme.componentLabels" (dict "root" . "component" "minio-init") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.minio.bucketInit.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.minio.bucketInit.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "ddc-pme.componentLabels" (dict "root" . "component" "minio-init") | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "ddc-pme.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- include "ddc-pme.imagePullSecrets" . | nindent 6 }}
+      {{- with .Values.podSecurityContext.minio }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- include "ddc-pme.scheduling" . | nindent 6 }}
+      containers:
+        - name: bucket-init
+          # Same image as the server: it ships `mc`.
+          image: {{ include "ddc-pme.image" (dict "root" . "image" .Values.minio.image "component" "minio") | quote }}
+          imagePullPolicy: {{ include "ddc-pme.pullPolicy" (dict "root" . "image" .Values.minio.image) }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              export MC_CONFIG_DIR=/tmp/mc
+              i=0
+              until mc alias set local "$S3_ENDPOINT" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
+                i=$((i+1))
+                if [ "$i" -ge 60 ]; then
+                  echo "bucket-init: MinIO at $S3_ENDPOINT not reachable after 60 tries" >&2
+                  exit 1
+                fi
+                sleep 2
+              done
+              mc mb --ignore-existing "local/$S3_BUCKET"
+              echo "bucket-init: bucket $S3_BUCKET ready"
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $s.name }}
+                  key: {{ $s.accessKeyKey }}
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $s.name }}
+                  key: {{ $s.secretKeyKey }}
+            - name: S3_BUCKET
+              value: {{ .Values.app.s3Bucket | quote }}
+            - name: S3_ENDPOINT
+              value: {{ include "ddc-pme.s3Endpoint" . | quote }}
+          {{- with .Values.resources.minioInit }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.containerSecurityContext.minio }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}
+{{- end }}

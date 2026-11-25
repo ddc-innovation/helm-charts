@@ -1,0 +1,59 @@
+{{- /*
+Optional HorizontalPodAutoscalers (autoscaling.<component>.enabled) for nginx
+and api. When one is on, the Deployment omits `replicas`, so `helm upgrade`
+never fights the autoscaler. Utilization targets are a percentage of the
+container REQUEST (resources.<component>.requests), which must therefore be set.
+Needs metrics-server (RKE2 ships it).
+*/ -}}
+{{- $items := list }}
+{{- if .Values.nginx.enabled }}
+{{- $items = append $items (dict "component" "nginx" "hpa" .Values.autoscaling.nginx) }}
+{{- end }}
+{{- $items = append $items (dict "component" "api" "hpa" .Values.autoscaling.api) }}
+{{- range $item := $items }}
+{{- $h := $item.hpa }}
+{{- if $h.enabled }}
+{{- if gt (int $h.minReplicas) (int $h.maxReplicas) }}
+{{- fail (printf "ddc-pme: autoscaling.%s.minReplicas (%v) must not exceed maxReplicas (%v)." $item.component $h.minReplicas $h.maxReplicas) }}
+{{- end }}
+{{- if not (or $h.targetCPUUtilizationPercentage $h.targetMemoryUtilizationPercentage) }}
+{{- fail (printf "ddc-pme: autoscaling.%s needs targetCPUUtilizationPercentage and/or targetMemoryUtilizationPercentage." $item.component) }}
+{{- end }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "ddc-pme.componentName" (dict "root" $ "component" $item.component) }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "ddc-pme.componentLabels" (dict "root" $ "component" $item.component) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "ddc-pme.componentName" (dict "root" $ "component" $item.component) }}
+  minReplicas: {{ $h.minReplicas }}
+  maxReplicas: {{ $h.maxReplicas }}
+  metrics:
+    {{- if $h.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $h.targetCPUUtilizationPercentage }}
+    {{- end }}
+    {{- if $h.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ $h.targetMemoryUtilizationPercentage }}
+    {{- end }}
+  behavior:
+    scaleDown:
+      # Avoid flapping: a spike should not be undone within minutes.
+      stabilizationWindowSeconds: {{ $h.scaleDownStabilizationSeconds | default 300 }}
+{{- end }}
+{{- end }}

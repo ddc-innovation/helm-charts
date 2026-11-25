@@ -12,6 +12,16 @@ charts:
     bump: patch
     set:
       image.digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  ddc-pme:
+    path: charts/ddc-pme
+    namespace: ddc-pme
+    bump: patch
+    # Synthetic values so lint/template work offline: the chart requires an
+    # immutable image tag and checks pre-existing Secrets with `lookup`, which
+    # returns nothing without a cluster. Never used for a real release.
+    set:
+      global.imageTag: ci-validate
+      secretValidation.allowOffline: "true"
   ddc-innovation-pm:
     path: charts/ddc-innovation-pm
     namespace: ddc-pm

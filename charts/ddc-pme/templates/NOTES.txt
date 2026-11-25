@@ -1,0 +1,26 @@
+ddc-pme {{ .Chart.Version }} released as "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Images: tag {{ .Values.global.imageTag }}
+Public URL: {{ if .Values.ingress.tls.enabled }}https{{ else }}http{{ end }}://{{ .Values.ingress.host }}
+
+Secrets (created by you in Rancher, never by this chart):
+  {{ .Values.existingSecrets.mysql.name }}   ({{ .Values.existingSecrets.mysql.usernameKey }}, {{ .Values.existingSecrets.mysql.passwordKey }})
+  {{ .Values.existingSecrets.redis.name }}   ({{ .Values.existingSecrets.redis.passwordKey }})
+  {{ .Values.existingSecrets.minio.name }}   ({{ .Values.existingSecrets.minio.accessKeyKey }}, {{ .Values.existingSecrets.minio.secretKeyKey }})
+{{- if not .Values.keycloak.publicClient }}
+  {{ .Values.existingSecrets.keycloak.name }}   ({{ .Values.existingSecrets.keycloak.clientSecretKey }})
+{{- end }}
+{{ if eq .Values.mysql.host "db.example.invalid" }}
+WARNING: mysql.host is still the placeholder "db.example.invalid"; the API cannot reach a database.
+{{- end }}
+{{- if contains "example.invalid" .Values.keycloak.baseUrl }}
+WARNING: keycloak.baseUrl is still a placeholder; token verification will fail.
+{{- end }}
+{{- if .Values.secretValidation.allowOffline }}
+WARNING: secretValidation.allowOffline=true: required Secrets were NOT checked. Use only for CI lint.
+{{- end }}
+{{- if not .Values.migrate.enabled }}
+
+The database schema is NOT migrated by this release (migrate.enabled=false).
+Run the migration deliberately, after a backup, with --set migrate.enabled=true.
+{{- end }}

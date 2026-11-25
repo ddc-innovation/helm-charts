@@ -1,0 +1,142 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ddc-pme chart values",
+  "description": "Deliberately permissive: types and enums for the settings that are easy to get wrong. Unknown keys are allowed. Semantic rules (no latest, ClusterIP only, Secret lookup, PDB vs replicas) live in templates/_helpers.tpl (ddc-pme.validate).",
+  "type": "object",
+  "properties": {
+    "global": {
+      "type": "object",
+      "properties": {
+        "imageTag": { "type": "string", "description": "Required, immutable tag (never latest). Empty fails the render." },
+        "imagePullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
+        "commonLabels": { "type": "object" }
+      }
+    },
+    "imagePullSecrets": { "type": "array" },
+    "existingSecrets": {
+      "type": "object",
+      "properties": {
+        "mysql": { "type": "object", "properties": { "name": { "type": "string", "minLength": 1 }, "usernameKey": { "type": "string", "minLength": 1 }, "passwordKey": { "type": "string", "minLength": 1 } } },
+        "redis": { "type": "object", "properties": { "name": { "type": "string", "minLength": 1 }, "passwordKey": { "type": "string", "minLength": 1 } } },
+        "minio": { "type": "object", "properties": { "name": { "type": "string", "minLength": 1 }, "accessKeyKey": { "type": "string", "minLength": 1 }, "secretKeyKey": { "type": "string", "minLength": 1 } } },
+        "keycloak": { "type": "object", "properties": { "name": { "type": "string", "minLength": 1 }, "clientSecretKey": { "type": "string", "minLength": 1 } } }
+      }
+    },
+    "secretValidation": {
+      "type": "object",
+      "properties": { "enabled": { "type": "boolean" }, "allowOffline": { "type": ["boolean", "string"], "enum": [true, false, "true"], "description": "CI lint only. The string \"true\" is accepted because charts/release-config.yml passes `set:` values with --set-string." } }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "kind": { "type": "string", "enum": ["Ingress", "IngressRoute"] },
+        "className": { "type": "string" },
+        "host": { "type": "string" },
+        "entryPoints": { "type": "array", "items": { "type": "string" } },
+        "annotations": { "type": "object" },
+        "tls": { "type": "object", "properties": { "enabled": { "type": "boolean" } } }
+      }
+    },
+    "nginx": {
+      "type": "object",
+      "properties": { "enabled": { "type": "boolean" }, "replicas": { "type": "integer", "minimum": 0 } }
+    },
+    "api": {
+      "type": "object",
+      "properties": {
+        "replicas": { "type": "integer", "minimum": 0 },
+        "databasePoolMax": { "type": "integer", "minimum": 1 },
+        "databasePoolMin": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "worker": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "replicas": { "type": "integer", "minimum": 0 },
+        "databasePoolMax": { "type": "integer", "minimum": 1 },
+        "databasePoolMin": { "type": "integer", "minimum": 0 },
+        "jobsConcurrency": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "migrate": {
+      "type": "object",
+      "properties": { "enabled": { "type": "boolean" }, "backoffLimit": { "type": "integer", "minimum": 0 } }
+    },
+    "redis": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "persistence": {
+          "type": "object",
+          "properties": { "enabled": { "type": "boolean" }, "size": { "type": "string" }, "storageClass": { "type": "string" } }
+        }
+      }
+    },
+    "minio": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "persistence": {
+          "type": "object",
+          "properties": { "enabled": { "type": "boolean" }, "size": { "type": "string" }, "storageClass": { "type": "string" } }
+        }
+      }
+    },
+    "mysql": {
+      "type": "object",
+      "properties": {
+        "host": { "type": "string" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "database": { "type": "string" }
+      }
+    },
+    "keycloak": {
+      "type": "object",
+      "description": "External OIDC provider. These values feed BOTH the API's expected iss/aud and the browser's redirect target, so they must match the client registered in digin-automation. Semantic rules (https-only, no placeholder host, redirect origins must equal ingress.host, non-empty audience) live in templates/_helpers.tpl (ddc-pme.validate).",
+      "required": ["baseUrl", "realm", "clientId", "redirectUri", "postLogoutRedirectUri", "audience"],
+      "properties": {
+        "baseUrl": { "type": "string", "pattern": "^https://[^/]+$", "description": "Public origin of Keycloak as browsers see it: scheme https, host, optional port, NO path and NO trailing slash. The issuer is derived as <baseUrl>/realms/<realm> and must equal the iss claim in tokens." },
+        "realm": { "type": "string", "minLength": 1 },
+        "clientId": { "type": "string", "minLength": 1 },
+        "publicClient": { "type": "boolean", "description": "true = public PKCE client (the only supported mode). false fails the render: KEYCLOAK_CLIENT_SECRET is injected but no code reads it, and a browser SPA has no confidential-client mode." },
+        "redirectUri": { "type": "string", "format": "uri", "pattern": "^https://", "description": "Must be registered on the Keycloak client and on this release's own origin." },
+        "postLogoutRedirectUri": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "audience": { "type": "string", "minLength": 1, "description": "Expected aud of access tokens. Empty disables the audience check in the API, which is a silent security downgrade." },
+        "managerClaim": { "type": "string", "minLength": 1 },
+        "oidcOnly": { "type": "boolean", "description": "Hide the email/password form in the SPA. Required true wherever the API's password grant is disabled (always, in practice)." },
+        "issuer": { "type": "string", "description": "Override of <baseUrl>/realms/<realm>. Leave empty unless the provider's iss differs from the public URL." },
+        "jwksUri": { "type": "string", "description": "Override of <issuer>/protocol/openid-connect/certs, for an in-cluster JWKS URL." }
+      }
+    },
+    "app": {
+      "type": "object",
+      "properties": {
+        "logLevel": { "type": "string", "enum": ["fatal", "error", "warn", "info", "debug", "trace", "silent"] }
+      }
+    },
+    "networkPolicy": { "type": "object", "properties": { "enabled": { "type": "boolean" } } },
+    "scheduling": {
+      "type": "object",
+      "properties": {
+        "podAntiAffinity": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "mode": { "type": "string", "enum": ["preferred", "required"] },
+            "topologyKey": { "type": "string" }
+          }
+        },
+        "podDisruptionBudget": { "type": "object", "properties": { "enabled": { "type": "boolean" } } }
+      }
+    },
+    "autoscaling": {
+      "type": "object",
+      "properties": {
+        "nginx": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "minReplicas": { "type": "integer", "minimum": 1 }, "maxReplicas": { "type": "integer", "minimum": 1 } } },
+        "api": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "minReplicas": { "type": "integer", "minimum": 1 }, "maxReplicas": { "type": "integer", "minimum": 1 } } }
+      }
+    }
+  }
+}

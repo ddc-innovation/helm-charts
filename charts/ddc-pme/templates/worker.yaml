@@ -1,0 +1,85 @@
+{{- if .Values.worker.enabled }}
+{{- /*
+Worker: BullMQ processors + cron (`node dist/worker.js`). Same image as the API,
+no HTTP port and therefore no Service. Health = the liveness file the worker
+touches every 10 s while it can reach Redis (probes.worker.liveness checks that
+/tmp/worker-alive is younger than 60 s). Not ready/serving anything, so there is
+no readiness probe.
+*/ -}}
+{{- $name := include "ddc-pme.componentName" (dict "root" . "component" "worker") }}
+{{- $image := dict "root" . "image" .Values.worker.image "component" "worker" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ddc-pme.componentLabels" (dict "root" . "component" "worker") | nindent 4 }}
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "ddc-pme.componentSelectorLabels" (dict "root" . "component" "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ddc-pme.componentLabels" (dict "root" . "component" "worker") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/backend-configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "ddc-pme.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      # Must exceed JOBS_SHUTDOWN_TIMEOUT_MS so in-flight jobs can drain.
+      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
+      {{- include "ddc-pme.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext.backend | nindent 8 }}
+      {{- include "ddc-pme.backendScheduling" (dict "root" . "component" "worker") | nindent 6 }}
+      containers:
+        - name: worker
+          image: {{ include "ddc-pme.image" $image | quote }}
+          imagePullPolicy: {{ include "ddc-pme.pullPolicy" (dict "root" . "image" .Values.worker.image) }}
+          command: ["node", "dist/worker.js"]
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext.backend | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "ddc-pme.configName" . }}
+          # ORDER MATTERS: secretKeyRefs before the URLs that expand them.
+          env:
+            {{- include "ddc-pme.backendSecretEnv" . | nindent 12 }}
+            - name: DATABASE_POOL_MAX
+              value: {{ .Values.worker.databasePoolMax | int64 | quote }}
+            - name: DATABASE_POOL_MIN
+              value: {{ .Values.worker.databasePoolMin | int64 | quote }}
+            - name: DATABASE_STATEMENT_TIMEOUT_MS
+              value: {{ .Values.worker.databaseStatementTimeoutMs | int64 | quote }}
+            - name: JOBS_ENABLED
+              value: {{ .Values.worker.jobsEnabled | quote }}
+            - name: JOBS_CONCURRENCY
+              value: {{ .Values.worker.jobsConcurrency | int64 | quote }}
+            - name: JOBS_SHUTDOWN_TIMEOUT_MS
+              value: {{ .Values.worker.jobsShutdownTimeoutMs | int64 | quote }}
+            # Touched by the worker while healthy; read by the liveness probe.
+            - name: WORKER_LIVENESS_FILE
+              value: /tmp/worker-alive
+            {{- include "ddc-pme.extraEnv" .Values.app.extraEnv | nindent 12 }}
+            {{- include "ddc-pme.extraEnv" .Values.worker.extraEnv | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.probes.worker.liveness | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources.worker | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.worker.tmpSizeLimit }}
+{{- end }}
