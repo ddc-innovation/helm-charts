@@ -3,7 +3,7 @@ entries:
   bdv:
   - apiVersion: v2
     appVersion: "372"
-    created: "2026-11-25T16:13:47.273891665Z"
+    created: "2026-11-25T16:40:25.267769028Z"
     description: BDV runtime and recoverable remote MySQL provisioning, with deployment
       evidence gates
     digest: 2517c0e1034c9a08d8d00de278531f6406487f8df0cf855f32188fd083153121
@@ -14,7 +14,7 @@ entries:
     version: 0.3.0
   - apiVersion: v2
     appVersion: "372"
-    created: "2026-11-25T16:13:47.270113686Z"
+    created: "2026-11-25T16:40:25.264317857Z"
     description: BDV runtime and recoverable remote MySQL provisioning, with deployment
       evidence gates
     digest: adfe63a7c2f16a1cf06203ace2b476326379ae798effe86a8afc66be408d6bba
@@ -25,7 +25,7 @@ entries:
     version: 0.2.0
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-11-25T16:13:47.266904349Z"
+    created: "2026-11-25T16:40:25.261167813Z"
     dependencies:
     - condition: minio.enabled
       name: minio
@@ -67,7 +67,7 @@ entries:
       artifacthub.io/operator: "false"
     apiVersion: v2
     appVersion: 1.0.0
-    created: "2026-11-25T16:13:47.275667812Z"
+    created: "2026-11-25T16:40:25.270182479Z"
     description: 'DDC Innovation Portfolio Management (DCIPM) — a .NET 9 API and a
       React/nginx web tier, deployed behind pfSense HAProxy and RKE2 Traefik.  TLS
       terminates OUTSIDE the cluster, so both workloads serve plain HTTP and the browser-facing
@@ -99,10 +99,29 @@ entries:
     urls:
     - https://ddc-innovation.github.io/helm-charts/ddc-innovation-pm-0.1.0.tgz
     version: 0.1.0
+  ddc-pme:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-11-25T16:40:25.271803274Z"
+    description: 'DDC PME (Project Management Engine): nginx-served React SPA, NestJS
+      API and worker, Redis and an optional MinIO, wired to a REMOTE Percona MySQL
+      and an external Keycloak. All credentials come from pre-existing Secrets created
+      in Rancher; this chart never creates a Secret.'
+    digest: 17a7020294af72179287357d6cdffd7071e192a200b5b1a52e6bc7d26d1fe566
+    home: https://ddc-pme.dinecodetalkers.com
+    keywords:
+    - ddc-pme
+    - pme
+    kubeVersion: '>=1.25.0-0'
+    name: ddc-pme
+    type: application
+    urls:
+    - https://ddc-innovation.github.io/helm-charts/ddc-pme-0.1.0.tgz
+    version: 0.1.0
   postfix-relay:
   - apiVersion: v2
     appVersion: 3.12-20260831-nonprod-unprivileged
-    created: "2026-11-25T16:13:47.276013353Z"
+    created: "2026-11-25T16:40:25.272127716Z"
     description: Non-root Postfix application alert relay for Exchange Online
     digest: 03bcd5a91dedde47ad09b1a7e9425ed9bdfd434d9c5151295fac5578d20de2e8
     name: postfix-relay
@@ -110,4 +129,4 @@ entries:
     urls:
     - https://ddc-innovation.github.io/helm-charts/postfix-relay-0.1.0.tgz
     version: 0.1.0
-generated: "2026-11-25T16:13:47.261460667Z"
+generated: "2026-11-25T16:40:25.256319258Z"
